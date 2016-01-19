@@ -1,0 +1,47 @@
+# Compiled Object files
+*.slo
+*.lo
+*.o
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+
+# others
+common/
+lib/
+bin/
+/gpuNUFFT/GPU_gpuNUFFT_3D/data/
+/gpuNUFFT/GPU_gpuNUFFT_3D/functions/trash/
+/gpuNUFFT/gpuNUFFT/build/
+test_03/build/
+gpuNUFFT/NUFFT_recon_demo_2D/kspaceRadial.mat
+gpuNUFFT/gpuNUFFT/bin
+*.asv
+*.zip
+gpuNUFFT/daten/results/
+gpuNUFFT/gpuNUFFT/matlab/script.out.*
+*.mexa64
+*.mexw32
+*.mexw64
+*.m~
+gpuNUFFT/bUTE/results/
+gpuNUFFT/bUTE/data/
+gpuNUFFT/3D_radial_bUTE_test/results/
+gpuNUFFT/bUTE/script.out*
+gpuNUFFT/daten/
+CUDA/inc/*config.hpp
+build/
+*.out
+*.out.*
+inc/*config.hpp
+*.mat
+tmp/
+*.swp
+
+matlab/demo/results/

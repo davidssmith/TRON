@@ -1,6 +1,7 @@
-# tron
-Trajectory Optimized Nufft
+# TRON
 
-Check back on January 17, 2016, for the code release coincident with the ISMRM Workshop on Data Reconstruction and Sampling in Sedona, AZ.
+Trajectory Optimized Nufft: Faster Non-Cartesian MRI Reconstruction through Prior Knowledge and Parallel Architectures
+
+This is the initial release of TRON as presented at the 2016 ISMRM Data Sampling and Image Reconstruction Workshop. A preprint is forthcoming, but until then please have a look at the abstract in `doc/`.
 
 

@@ -1,0 +1,52 @@
+-----------------------------------------------------------------------
+Version 2.0.6
+----------------------------------------------------------------------
+	- Automatic coil summation is performed in adjoint gridding 
+	  operation when gpuNUFFT operator is initialized with 
+	  coil sensitivities. Moreover, an automatic expansion 
+	  to the coil dimensions is performed in the forward operation. 
+	
+	- Support for arbitrary sector widths. Thus, there is no longer
+	  the need that the grid dimensions are exact integer multiples 
+	  of the sector width. Moreover, this means that 
+	  the oversampling ratio can now be tuned to the limit since 
+	  this has always had a direct impact on the total grid 
+	  dimensions. 
+
+-----------------------------------------------------------------------
+Version 2.0.5
+----------------------------------------------------------------------
+	- Varying dimensions in all directions, e.g. 3d grids with 
+	  256x128x64 or 2d grids with 256x128 are supported now.
+
+-----------------------------------------------------------------------
+Version 2.0.4
+----------------------------------------------------------------------
+	- Use textures for kernel lookup
+	- Use textures for data readout
+	- Balanced and textured gridding to work more efficiently
+	- Apply sens data on GPU
+	- Automatically export mex-files into gpuNUFFT/@gpuNUFFT/private 
+	  folder
+	- Refactored initialization params of MATLAB Operator
+
+---------------------------------------------------------------------
+Version 2.0.3
+----------------------------------------------------------------------
+	- Anisotropic grid sizes, e.g. 128x128x64 supported.
+
+----------------------------------------------------------------------
+Version 2.0.2
+----------------------------------------------------------------------
+	- Precomputation step on the GPU
+	- Better performance to continuously create the GpuNUFFT Operator
+
+----------------------------------------------------------------------
+Version 2.0.1
+----------------------------------------------------------------------
+	- First working hybrid version with 2- and 3d isotropic support
+	
+----------------------------------------------------------------------
+Version 1.1.0
+----------------------------------------------------------------------
+	- Early release
