@@ -758,12 +758,12 @@ main (int argc, char *argv[])
     float oversamp = 1.f;
     float kernwidth = 2.f;
     int dpe = 256;
-    int peskip = 0;
+    int peskip = 7999;
 
 
     ra_t ra_nudata;
     char datafile[1024];
-    const char *path = "../data/ex_whole_body";
+    const char *path = "../data/ex_abdominal";
     snprintf(datafile, 1024, "%s.ra", path);
     printf("read non-uniform data from %s\n", datafile);
     ra_read(&ra_nudata, datafile);
