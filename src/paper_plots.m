@@ -93,7 +93,7 @@ rawrite(m_gn, '../fig/img_irt.ra');
 
 %% run this paper's code
 !make
-!./rr2d
+!./rr2d ../data/ex_whole_body.ra
 !mv img_tron.ra ../fig/
 
 %% load this paper's result

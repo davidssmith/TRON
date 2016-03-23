@@ -760,11 +760,14 @@ main (int argc, char *argv[])
     int dpe = 256;
     int peskip = 7999;
 
-
     ra_t ra_nudata;
     char datafile[1024];
-    const char *path = "../data/ex_abdominal";
-    snprintf(datafile, 1024, "%s.ra", path);
+    if (argc > 1)
+        snprintf(datafile, 1024, "%s", argv[1]);
+    else {
+        fprintf(stderr, "Usage: rr2d <rafile>\n");
+        exit(1);
+    }
     printf("read non-uniform data from %s\n", datafile);
     ra_read(&ra_nudata, datafile);
     printf("dims = {%lld, %lld, %lld, %lld}\n", ra_nudata.dims[0],
