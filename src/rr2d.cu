@@ -755,9 +755,9 @@ main (int argc, char *argv[])
 {
     // for testing
     float2 *h_nudata, *h_img, *h_b1 = NULL;
-    float oversamp = 1.f;
+    float oversamp = 2.f;
     float kernwidth = 2.f;
-    int dpe = 256;
+    int dpe = 89;
     int peskip = 7999;
 
     ra_t ra_nudata;

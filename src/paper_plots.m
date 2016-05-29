@@ -98,8 +98,8 @@ rawrite(m_gn, '../fig/img_irt.ra');
 
 %% load this paper's result
 m_tron = single(abs(squeeze(raread('../fig/img_tron.ra'))));
-m_irt = raread('../fig/img_irt.ra')/3;
-m_gn = raread('../fig/img_gpunufft.ra')/1.5;
+m_irt = raread('../fig/img_irt.ra');
+m_gn = raread('../fig/img_gpunufft.ra');
 
 %%
 zview = floor(nslices/3)+1;
@@ -110,9 +110,8 @@ x_tron = normalize(fliplr(m_tron(:,:,zview)));
 y_irt =normalize(fliplr(squeeze(m_irt(:,yview,:)).'));
 y_gn = normalize(fliplr(squeeze(m_gn(:,yview,:)).'));
 y_tron = normalize(fliplr(squeeze(m_tron(yview+2,:,:)).'));
-fprintf('TODO: figure out why my code is shifted!\n');
 figure(1)
-x = [x_irt x_gn x_tron*1e10];
+x = [x_irt x_gn x_tron];
 x = x(80:end-100,:);
 imagesc(x);
 imwrite(x,'../fig/axial.png');
