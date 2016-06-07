@@ -126,8 +126,9 @@ powit (float2 *A, const int n, const int niters)
         float norm_sq = 0.f;
         for (int k = 0; k < n; ++k)
           norm_sq += norm(y[k]);
+        norm_sq = sqrtf(norm_sq);
         for (int k = 0; k < n; ++k)
-            x[k] = y[k] / sqrtf(norm_sq);
+            x[k] = y[k] / norm_sq;
     }
     float2 lambda = make_float2(0.f,0.f);
     for (int j = 0; j < n; ++j) {
@@ -165,19 +166,16 @@ coilcombinewalsh (float2 *d_img, float2 *d_b1, const float2 * __restrict__ d_coi
         for (int k = 0; k < NCHAN*NCHAN; ++k)
             A[k] = make_float2(0.f,0.f);
         for (int px = max(0,x-npatch); px <= min(nimg-1,x+npatch); ++px)
-            for (int py = max(0,y-npatch); py <= min(nimg-1,y+npatch); ++py)
-            {
+            for (int py = max(0,y-npatch); py <= min(nimg-1,y+npatch); ++py) {
                 int offset = nchan*(px*nimg + py);
                 for (int c2 = 0; c2 < nchan; ++c2)
                     for (int c1 = 0; c1 < nchan; ++c1)
                         A[c1*nchan + c2] += d_coilimg[offset+c1]*conj(d_coilimg[offset+c2]);
             }
-        //csvd(A, NCHAN, NCHAN, 1, NCHAN, 0, s, U, NULL);
-        //d_img[id] = A[NCHAN];
         powit(A, nchan, 5);
         d_img[id] = make_float2(0.f, 0.f);
         for (int c = 0; c < nchan; ++c)
-            d_img[id] += A[nchan]*A[c]*d_coilimg[nchan*id+c]; // * cexpf(-maxphase);
+            d_img[id] += conj(A[c])*d_coilimg[nchan*id+c]; // * cexpf(-maxphase);
 #ifdef CALC_B1
         for (int c = 0; c < NCHAN; ++c) {
             d_b1[nchan*id + c] = sqrtf(s[0])*U[nchan*c];
