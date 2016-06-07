@@ -41,6 +41,7 @@
 // GLOBAL VARIABLES
 #define NSTREAMS   2
 #define NCHAN      8
+#define MAXCHAN    8
 #define MULTI_GPU  1
 #define PHI        1.9416089796736116f
 
@@ -106,275 +107,38 @@ fftshift (float2 *d_dst, const float2* __restrict__ d_src, const int n, const in
     }
 }
 
-/* Singular Value Decomposition: A = U s V'
-   A is destroyed.  m must be >= n. If smaller, A should be filled with zero rows.
-   Code is adapted from Collected Algorithms from ACM, Algorithm 358.
-   U' is applied to the p vectors given in columns n, n+1, ..., n+p-1 of matrix A
-   nu and nv specify the number of columns of U and V to calculate. Zero is ok and faster.
-   See: http://www.scs.fsu.edu/~burkardt/f77_src/toms358/toms358.f */
-__host__ __device__ void
-csvd (float2 *A, const int m, const int n, const int p,
-        const int nu, const int nv, float *s, float2 *U, float2 *V)
-{
-    // U: [m x nu]   V: [n x nv]   A: [m x (n+p)]  s: [m]
-    float b[NCHAN], c[NCHAN], t[NCHAN];
-    float cs, eps, eta, f, g, h, sn, tol, w, x, y, z;
-    int i, j, k, k1, L, L1, nM1, np;
-    float2 q, r;
-    eta = 1.5e-7f;            /* eta = the relative machine precision */
-    tol = 1.5e-30f;            /* tol = the smallest normalized positive number, divided by eta */
-    np = n + p;
-    nM1 = n - 1;
-    L = 0;
-    /* HOUSEHOLDER REDUCTION */
-    c[0] = 0.f;
-    k = 0;
-    while (1)
-    {
-        k1 = k + 1;
-        /* ELIMINATION OF A[i][k], i = k, ..., m-1 */
-        z = 0.f;
-        for (i = k; i < m; i++)
-            z += norm(A[i*np + k]);
-        b[k] = 0.f;
-        if (z > tol)
-        {
-            z = sqrtf(z);
-            b[k] = z;
-            w = abs(A[k*np + k]);
-            q = make_float2(1.f, 0.f);
-            if (w != 0.f) q = A[k*np + k] / w;
-            A[k*np + k] = q * (z + w);
-            if (k != np - 1) {
-                for (j = k1; j < np; j++) {
-                    q = make_float2(0.f, 0.f);
-                    for (i = k; i < m; i++)
-                        q += conj(A[i*np + k]) * A[i*np + j];
-                    q /= z * (z + w);
-                    for (i = k; i < m; i++)
-                        A[i*np + j] -= q * A[i*np + k];
-                }
-            }
-            /* PHASE TRANSFORMATION */
-            q = conj(A[k*np + k]) / (-abs(A[k*np + k]));
-            for (j = k1; j < np; j++)
-                A[k*np + j] *= q;
-        }
-        /* ELIMINATION OF A[k][j], j = k+2, ..., n-1 */
-        if (k == nM1) break;
-        z = 0.0F;
-        for (j = k1; j < n; j++)
-            z += norm(A[k*np + j]);
-        c[k1] = 0.0F;
-        if (z > tol)
-        {
-            z = sqrtf(z);
-            c[k1] = z;
-            w = abs(A[k*np + k1]);
-            q = make_float2(1.f, 0.f);
-            if (w != 0.f) q = A[k*np + k1] / w;
-            A[k*np + k1] = q * (z + w);
-            for (i = k1; i < m; i++) {
-                q = make_float2(0.f, 0.f);
-                for (j = k1; j < n; j++)
-                    q = q + conj(A[k*np + j]) * A[i*np + j];
-                q /= z * (z + w);
-                for (j = k1; j < n; j++)
-                    A[i*np + j] -= q * A[k*np  +j];
-            }
-            /* PHASE TRANSFORMATION */
-            q = conj(A[k*np + k1]) / (-abs(A[k*np + k1]));
-            for (i = k1; i < m; i++)
-                A[i*np + k1] *= q;
-        }
-        k = k1;
-    }
-    /* TOLERANCE FOR NEGLIGIBLE ELEMENTS */
-    eps = 0.f;
-    for (k = 0; k < n; k++) {
-        s[k] = b[k];
-        t[k] = c[k];
-        if (s[k] + t[k] > eps)
-            eps = s[k] + t[k];
-    }
-    eps *= eta;
-    /* INITIALIZATION OF u AND v */
-    for (j = 0; j < m*nu; j++)
-        U[j] = make_float2(0.f, 0.f);
-    for (j = 0; j < nu; j++)
-        U[j*nu + j] = make_float2(1.f, 0.f);
-    for (j = 0; j < n*nv; j++)
-        V[j] = make_float2(0.f, 0.f);
-    for (j = 0; j < nv; j++)
-        V[j*nv + j] = make_float2(1.f, 0.f);
 
-    /* QR DIAGONALIZATION */
-    for (k = nM1; k >= 0; k--)
-    {
-        /* TEST FOR SPLIT */
-        while (1)
-        {
-            for (L = k; L >= 0; L--) {
-                if (fabsf(t[L]) <= eps) goto Test;
-                if (fabsf(s[L - 1]) <= eps) break;
-            }
-            /* CANCELLATION OF E(L) */
-            cs = 0.0f;
-            sn = 1.0f;
-            L1 = L - 1;
-            for (i = L; i <= k; i++)
-            {
-                f = sn * t[i];
-                t[i] *= cs;
-                if (fabsf(f) <= eps) goto Test;
-                h = s[i];
-                w = sqrtf(f * f + h * h);
-                s[i] = w;
-                cs = h / w;
-                sn = -f / w;
-                for (j = 0; nu > 0 && j < n; j++) {
-                    x = U[j*nu + L1].x;
-                    y = U[j*nu + i].x;
-                    U[j*nu + L1].x = x * cs + y * sn;
-                    U[j*nu + i].x = y * cs - x * sn;
-                }
-                if (np == n) continue;
-                for (j = n; j < np; j++) {
-                    q = A[L1*np + j];
-                    r = A[i*np + j];
-                    A[L1*np + j] = q * cs + r * sn;
-                    A[i*np + j] = r * cs - q * sn;
-                }
-            }
-            /* TEST FOR CONVERGENCE */
-    Test:    w = s[k];
-            if (L == k) break;
-            /* ORIGIN SHIFT */
-            x = s[L];
-            y = s[k - 1];
-            g = t[k - 1];
-            h = t[k];
-            f = ((y - w) * (y + w) + (g - h) * (g + h)) / (2.f * h * y);
-            g = sqrtf(f * f + 1.f);
-            if (f < 0.f) g = -g;
-            f = ((x - w) * (x + w) + (y / (f + g) - h) * h) / x;
-            /* QR STEP */
-            cs = 1.f;
-            sn = 1.f;
-            L1 = L + 1;
-            for (i = L1; i <= k; i++)
-            {
-                g = t[i];
-                y = s[i];
-                h = sn * g;
-                g = cs * g;
-                w = sqrtf(h * h + f * f);
-                t[i - 1] = w;
-                cs = f / w;
-                sn = h / w;
-                f = x * cs + g * sn;
-                g = g * cs - x * sn;
-                h = y * sn;
-                y = y * cs;
-                for (j = 0; nv > 0 && j < n; j++) {
-                    x = V[j*nv + i - 1].x;
-                    w = V[j*nv + i].x;
-                    V[j*nv + i - 1].x = x * cs + w * sn;
-                    V[j*nv + i].x = w * cs - x * sn;
-                }
-                w = sqrtf(h * h + f * f);
-                s[i - 1] = w;
-                cs = f / w;
-                sn = h / w;
-                f = cs * g + sn * y;
-                x = cs * y - sn * g;
-                for (j = 0; nu > 0 && j < n; j++) {
-                    y = U[j*nu + i - 1].x;
-                    w = U[j*nu + i].x;
-                    U[j*nu + i - 1].x = y * cs + w * sn;
-                    U[j*nu + i].x = w * cs - y * sn;
-                }
-                if (n == np) continue;
-                for (j = n; j < np; j++) {
-                    q = A[(i - 1)*np + j];
-                    r = A[i*np + j];
-                    A[(i - 1)*np + j] = q * cs + r * sn;
-                    A[i*np + j] = r * cs - q * sn;
-                }
-            }
-            t[L] = 0.f;
-            t[k] = f;
-            s[k] = x;
+
+__host__ __device__ void
+powit (float2 *A, const int n, const int niters)
+{
+    /* replace first column of square matrix A with largest eigenvector */
+    float2 x[MAXCHAN], y[MAXCHAN];
+    for (int k = 0; k < n; ++k)
+        x[k] = make_float2(1.f, 0.f);
+    for (int t = 0; t < niters; ++t) {
+        for (int j = 0; j < n; ++j) {
+            y[j] = make_float2(0.f,0.f);
+            for (int k = 0; k < n; ++k)
+               y[j] += A[j*n + k]*x[k];
         }
-        /* CONVERGENCE */
-        if (w >= 0.f) continue;
-        s[k] = -w;
-        if (nv == 0) continue;
-        for (j = 0; j < n; j++)
-            V[j*nv + k] = -V[j*nv + k];
+        // calculate the length of the resultant vector
+        float norm_sq = 0.f;
+        for (int k = 0; k < n; ++k)
+          norm_sq += norm(y[k]);
+        for (int k = 0; k < n; ++k)
+            x[k] = y[k] / sqrtf(norm_sq);
     }
-    /* SORT SINGULAR VALUES */
-    for (k = 0; k < n; k++)    /* sort descending */
-    {
-        g = -1.f;
-        j = k;
-        for (i = k; i < n; i++) {    /* sort descending */
-            if (s[i] <= g) continue;
-            g = s[i];
-            j = i;
-        }
-        if (j == k) continue;
-        s[j] = s[k];
-        s[k] = g;
-        for (i = 0; nv > 0 && i < n; i++) {
-            q = V[i*nv + j];
-            V[i*nv + j] = V[i*nv + k];
-            V[i*nv + k] = q;
-        }
-        for (i = 0; nu > 0 && i < n; i++) {
-            q = U[i*nu + j];
-            U[i*nu + j] = U[i*nu + k];
-            U[i*nu + k] = q;
-        }
-        if (n == np) continue;
-        for (i = n; i < np; i++) {
-            q = A[j*np + i];
-            A[j*np + i] = A[k*np + i];
-            A[k*np + i] = q;
-        }
+    float2 lambda = make_float2(0.f,0.f);
+    for (int j = 0; j < n; ++j) {
+        y[j] = make_float2(0.f,0.f);
+        for (int k = 0; k < n; ++k)
+           y[j] += A[j*n + k]*x[k];
+        lambda += conj(x[j])*y[j];
     }
-    /* BACK TRANSFORMATION */
-    for (k = nM1; nu > 0 && k >= 0; k--)
-    {
-        if (b[k] == 0.f) continue;
-        q = -A[k*np + k] / abs(A[k*np + k]);
-        for (j = 0; j < nu; j++)
-            U[k*nu + j] *= q;
-        for (j = 0; j < nu; j++) {
-            q = make_float2(0.f, 0.f);
-            for (i = k; i < m; i++)
-                q = q + conj(A[i*np + k]) * U[i*nu + j];
-            q /= abs(A[k*np + k]) * b[k];
-            for (i = k; i < m; i++)
-                U[i*nu + j] -= q * A[i*np + k];
-        }
-    }
-    for (k = n - 2; nv > 0 && n > 1 && k >= 0; k--)
-    {
-        k1 = k + 1;
-        if (c[k1] == 0.f) continue;
-        q = conj(A[k*np + k1]) / (-abs(A[k*np + k1]));
-        for (j = 0; j < nv; j++)
-            V[k1*nv + j] *= q;
-        for (j = 0; j < nv; j++) {
-            q = make_float2(0.f, 0.f);
-            for (i = k1; i < n; i++)
-                q = q + A[k*np + i] * V[i*nv + j];
-            q /= (abs(A[k*np + k1]) * c[k1]);
-            for (i = k1; i < n; i++)
-                V[i*nv + j] -= q * conj(A[k*np + i]);
-        }
-    }
+    for (int j = 0; j < n; ++j)
+        A[j] = x[j];
+    A[n] = lambda;  // store dominant eigenvalue in A
 }
 
 __global__ void
@@ -390,33 +154,30 @@ coilcombinesos (float2 *d_img, const float2 * __restrict__ d_coilimg, const int 
 }
 
 __global__ void
-coilcombinewalsh (float2 *d_img, float2 *d_b1, const float2 * __restrict__ d_coilimg, const int nimg, const int nchan, const int npatch)
+coilcombinewalsh (float2 *d_img, float2 *d_b1, const float2 * __restrict__ d_coilimg, 
+   const int nimg, const int nchan, const int npatch)
 {
-    float2 A[NCHAN*(NCHAN+1)], U[NCHAN*NCHAN];
-    float s[NCHAN];
-    const int n = NCHAN + 1;
+    float2 A[MAXCHAN*MAXCHAN];
     for (size_t id = blockIdx.x * blockDim.x + threadIdx.x; id < nimg*nimg; id += blockDim.x * gridDim.x)
     {
-        for (int c1 = 0; c1 < NCHAN; ++c1) {
-            for (int c2 = 0; c2 < NCHAN; ++c2)
-                A[c1*n + c2] = make_float2(0.f,0.f);
-            A[c1*n + NCHAN] = d_coilimg[nchan*id+c1];
-        }
         int x = id / nimg;
         int y = id % nimg;
+        for (int k = 0; k < NCHAN*NCHAN; ++k)
+            A[k] = make_float2(0.f,0.f);
         for (int px = max(0,x-npatch); px <= min(nimg-1,x+npatch); ++px)
             for (int py = max(0,y-npatch); py <= min(nimg-1,y+npatch); ++py)
             {
                 int offset = nchan*(px*nimg + py);
-                for (int c2 = 0; c2 < NCHAN; ++c2)
-                    for (int c1 = 0; c1 < NCHAN; ++c1)
-                        A[c1*n + c2] += d_coilimg[offset+c1]*conj(d_coilimg[offset+c2]);
+                for (int c2 = 0; c2 < nchan; ++c2)
+                    for (int c1 = 0; c1 < nchan; ++c1)
+                        A[c1*nchan + c2] += d_coilimg[offset+c1]*conj(d_coilimg[offset+c2]);
             }
-        csvd(A, NCHAN, NCHAN, 1, NCHAN, 0, s, U, NULL);
-        //csvd (float2 *A, const int m, const int n, const int p,
-                //const int nu, const int nv, float *s, float2 *U, float2 *V)
-        //float maxphase = cargf(d_coilimg[nchan*id]); // assume coil 0 is brightest
-        d_img[id] = A[0*n + NCHAN]; // * cexpf(-maxphase);
+        //csvd(A, NCHAN, NCHAN, 1, NCHAN, 0, s, U, NULL);
+        //d_img[id] = A[NCHAN];
+        powit(A, nchan, 5);
+        d_img[id] = make_float2(0.f, 0.f);
+        for (int c = 0; c < nchan; ++c)
+            d_img[id] += A[nchan]*A[c]*d_coilimg[nchan*id+c]; // * cexpf(-maxphase);
 #ifdef CALC_B1
         for (int c = 0; c < NCHAN; ++c) {
             d_b1[nchan*id + c] = sqrtf(s[0])*U[nchan*c];
@@ -758,7 +519,7 @@ main (int argc, char *argv[])
     float oversamp = 2.f;
     float kernwidth = 2.f;
     int dpe = 89;
-    int peskip = 7999;
+    int peskip = 0; //7999;
 
     ra_t ra_nudata;
     char datafile[1024];
