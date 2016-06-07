@@ -96,7 +96,7 @@ rawrite(m_gn, '../fig/img_irt.ra');
 !./rr2d ../data/ex_whole_body.ra
 !mv img_tron.ra ../fig/
 
-%% load this paper's result
+%% load  results
 m_tron = single(abs(squeeze(raread('../fig/img_tron.ra'))));
 m_irt = raread('../fig/img_irt.ra');
 m_gn = raread('../fig/img_gpunufft.ra');
