@@ -1,5 +1,5 @@
 CC=nvcc
-CFLAGS=-O3 --use_fast_math -DCUDA_HOST_MALLOC -DWALSH_COMB #-DKERN_KB
+CFLAGS=-O3 --use_fast_math -DCUDA_HOST_MALLOC -DKERN_KB #-DWALSH_COMB
 LFLAGS=-lcufft
 
 objects = rr2d.o ra.o
