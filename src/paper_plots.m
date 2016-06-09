@@ -120,23 +120,25 @@ x_tron = x_tron(:,80:end-100,:);
 x = mosaic([x_irt; x_gn; x_tron]).';
 %x = x(80:end-100,:);
 imshow(x,[0,0.99]);
-imwrite(x,'../fig/axial.png');
-colormap(gray);
+imwrite(x,'../fig/fig3.png');
+imwrite(double(x),'../fig/fig3.tiff');
 axis image;
 title('axial');
+print -deps '../fig/fig3.eps'
 
 figure(2)
 y_irt =normalize(fliplr(squeeze(m_irt(:,yview,:)).'));
 y_gn = normalize(fliplr(squeeze(m_gn(:,yview,:)).'));
-y_tron = normalize(fliplr(squeeze(m_tron(yview+2,:,:)).'));
+y_tron = normalize(fliplr(squeeze(m_tron(yview+2,:,:)).')); 
 y = [y_irt, y_gn, y_tron];
 y = y(10:end,:);
 y = imresize(y, [950,size(y,2)]);
 imshow(y,[0,0.99]);
-imwrite(y, '../fig/coronal.png');
+imwrite(y, '../fig/fig2.png');
+imwrite(double(y), '../fig/fig2.tiff');
 colormap(gray);
 title('coronal');
-colorbar;
+print -deps '../fig/fig2.eps'
 
 % figure(3)
 % plot(1:N,x_gn(:,N/2),'b',1:N,x_this(:,N/2),'m');
