@@ -102,28 +102,37 @@ m_irt = raread('../fig/img_irt.ra');
 m_gn = raread('../fig/img_gpunufft.ra');
 
 %%
-zview = floor(nslices/3)+1;
+zview = (floor(nslices/7):45:nslices);
 yview = floor(N/2);
-x_irt = normalize(fliplr(rot90(m_irt(:,:,zview))));
-x_gn = normalize(fliplr(rot90(m_gn(:,:,zview))));
-x_tron = normalize(fliplr(m_tron(:,:,zview)));
-y_irt =normalize(fliplr(squeeze(m_irt(:,yview,:)).'));
-y_gn = normalize(fliplr(squeeze(m_gn(:,yview,:)).'));
-y_tron = normalize(fliplr(squeeze(m_tron(yview+2,:,:)).'));
+
 figure(1)
-x = [x_irt x_gn x_tron];
-x = x(80:end-100,:);
-imagesc(x);
+x_irt = normalize(m_irt(:,:,zview));
+x_gn = normalize(m_gn(:,:,zview));
+x_tron = normalize(m_tron(:,:,zview));
+for k = 1:size(x_tron,3)
+    x_tron(:,:,k) = flipud(fliplr(rot90(x_tron(:,:,k),-1)));
+    x_irt(:,:,k) = flipud(fliplr(x_irt(:,:,k)));
+    x_gn(:,:,k) = flipud(fliplr(x_gn(:,:,k)));
+end
+x_irt = x_irt(:,80:end-100,:);
+x_gn = x_gn(:,80:end-100,:);
+x_tron = x_tron(:,80:end-100,:);
+x = mosaic([x_irt; x_gn; x_tron]).';
+%x = x(80:end-100,:);
+imshow(x,[0,0.99]);
 imwrite(x,'../fig/axial.png');
 colormap(gray);
 axis image;
 title('axial');
 
 figure(2)
+y_irt =normalize(fliplr(squeeze(m_irt(:,yview,:)).'));
+y_gn = normalize(fliplr(squeeze(m_gn(:,yview,:)).'));
+y_tron = normalize(fliplr(squeeze(m_tron(yview+2,:,:)).'));
 y = [y_irt, y_gn, y_tron];
 y = y(10:end,:);
 y = imresize(y, [950,size(y,2)]);
-imshow(y,[]);
+imshow(y,[0,0.99]);
 imwrite(y, '../fig/coronal.png');
 colormap(gray);
 title('coronal');
