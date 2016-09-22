@@ -155,7 +155,7 @@ coilcombinesos (float2 *d_img, const float2 * __restrict__ d_coilimg, const int 
 }
 
 __global__ void
-coilcombinewalsh (float2 *d_img, float2 *d_b1, const float2 * __restrict__ d_coilimg, 
+coilcombinewalsh (float2 *d_img, const float2 * __restrict__ d_coilimg, 
    const int nimg, const int nchan, const int npatch)
 {
     float2 A[MAXCHAN*MAXCHAN];
@@ -176,11 +176,11 @@ coilcombinewalsh (float2 *d_img, float2 *d_b1, const float2 * __restrict__ d_coi
         d_img[id] = make_float2(0.f, 0.f);
         for (int c = 0; c < nchan; ++c)
             d_img[id] += conj(A[c])*d_coilimg[nchan*id+c]; // * cexpf(-maxphase);
-#ifdef CALC_B1
-        for (int c = 0; c < NCHAN; ++c) {
-            d_b1[nchan*id + c] = sqrtf(s[0])*U[nchan*c];
-        }
-#endif
+// #ifdef CALC_B1
+//         for (int c = 0; c < NCHAN; ++c) {
+//             d_b1[nchan*id + c] = sqrtf(s[0])*U[nchan*c];
+//         }
+// #endif
     }
 }
 
@@ -405,7 +405,7 @@ degridradial2d (
 extern "C" {  // don't mangle name, so can call from other languages
 
 __host__ void
-recongar2d (float2 *h_img, float2 *h_b1, const float2 *__restrict__ h_nudata,
+recongar2d (float2 *h_img, const float2 *__restrict__ h_nudata,
     int nchan, const int nro, const int npe, const int nslices, const int ndyn,
     const int ngrid, const int nimg, const int npe_per_dyn, const int dpe, const int peskip,
     const float oversamp, const float kernwidth)
@@ -488,9 +488,6 @@ recongar2d (float2 *h_img, float2 *h_b1, const float2 *__restrict__ h_nudata,
             }
             deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nimg, 1);
             cuTry(cudaMemcpyAsync(h_img + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
-#ifdef CALC_B1
-            cuTry(cudaMemcpyAsync(h_b1 + s*nimg*nimg*nchan, d_b1[j], d_coilimgsize, cudaMemcpyDeviceToHost, stream[j]));
-#endif
         }
 
     printf("freeing device memory\n");
@@ -514,21 +511,59 @@ main (int argc, char *argv[])
 {
     // for testing
     float2 *h_nudata, *h_img, *h_b1 = NULL;
-    float oversamp = 2.f;
-    float kernwidth = 2.f;
-    int dpe = 89;
-    int peskip = 0; //7999;
-
+    float oversamp = 2.f;   // option o
+    float kernwidth = 2.f;  // option w
+    int dpe = 89;  // option d
+    int peskip = 0; //7999;  // option s  
+    int adjoint = 0; // option a
     ra_t ra_nudata;
-    char datafile[1024];
+    int c;
+
+    opterr = 0;
+    while ((c = getopt (argc, argv, "adosw:")) != -1) 
+    {
+        switch (c) {
+            case 'a':
+                adjoint = 1;  // perform adjoint operation
+                break;
+            case 'd':
+                dpe = atoi(optarg);
+                break;
+            case 'o':
+                oversamp = atof(optarg);
+                break;      
+            case 's':
+                peskip = atoi(optarg);
+                break;
+            case 'w':
+                kernwidth = atof(optarg);
+                break;
+            // case '?':
+            //     if (optopt == 'c')
+            //       fprintf (stderr, "Option -%c requires an argument.\n", optopt);
+            //     else if (isprint (optopt))
+            //       fprintf (stderr, "Unknown option `-%c'.\n", optopt);
+            //     else
+            //       fprintf (stderr,
+            //           "Unknown option character `\\x%x'.\n",
+            //             optopt);
+            //     return 1;
+            default:
+                abort ();
+        }
+    }
+      
+    char infile[1024], outfile[1024];
+    snprintf(outfile, 1024, "img_tron.ra"); // default value
+
     if (argc > 1)
-        snprintf(datafile, 1024, "%s", argv[1]);
+        snprintf(infile, 1024, "%s", argv[1]);
     else {
-        fprintf(stderr, "Usage: rr2d <rafile>\n");
+        fprintf(stderr, "Usage: rr2d [-a] [-d dpe] [-o oversamp] [-s peskip] [-w kernwidth] <infile> <outfile>\n");
         exit(1);
     }
-    printf("read non-uniform data from %s\n", datafile);
-    ra_read(&ra_nudata, datafile);
+    printf("read non-uniform data from %s\n", );
+    ra_read(&ra_nudata, infile);
     printf("dims = {%lld, %lld, %lld, %lld}\n", ra_nudata.dims[0],
         ra_nudata.dims[1], ra_nudata.dims[2], ra_nudata.dims[3]);
     int nchan = ra_nudata.dims[0];
@@ -550,22 +585,16 @@ main (int argc, char *argv[])
 #ifdef CUDA_HOST_MALLOC
     //cuTry(cudaMallocHost((void**)&h_nudata, nchan*nro*npe*sizeof(float2)));
     cuTry(cudaMallocHost((void**)&h_img, nimg*nimg*ndyn*nslices*sizeof(float2)));
-# ifdef CALC_B1
-    cuTry(cudaMallocHost((void**)&h_b1, nchan*nimg*nimg*ndyn*nslices*sizeof(float2)));
-# endif
 #else
     //h_nudata = (float2*)malloc(nchan*nro*npe*sizeof(float2));
     h_img = (float2*)malloc(nimg*nimg*ndyn*nslices*sizeof(float2));
-# ifdef CALC_B1
-    h_b1 = (float2*)malloc(nchan*nimg*nimg*ndyn*nslices*sizeof(float2));
-# endif
 #endif
 
 
 
     clock_t start = clock();
     // the magic happens
-    recongar2d(h_img, h_b1, h_nudata, nchan, nro, npe, nslices, ndyn, ngrid, nimg, npe_per_slice,
+    recongar2d(h_img, h_nudata, nchan, nro, npe, nslices, ndyn, ngrid, nimg, npe_per_slice,
         dpe, peskip, oversamp, kernwidth);
     clock_t end = clock();
     printf("elapsed time: %.2f s\n", ((float)(end - start)) / CLOCKS_PER_SEC);
@@ -583,44 +612,19 @@ main (int argc, char *argv[])
     ra_img.dims[2] = nimg;
     ra_img.dims[3] = ndyn;
     ra_img.data = (uint8_t*)h_img;
-    char imgfile[1024];
-    snprintf(imgfile, 1024, "img_tron.ra");
-    printf("write result to %s\n", imgfile);
-    ra_write(&ra_img, imgfile);
+    printf("write result to %s\n", outfile);
+    ra_write(&ra_img, outfile);
 
-#ifdef CALC_B1
-    ra_t ra_b1;
-    ra_b1.flags = 0;
-    ra_b1.eltype = 4;
-    ra_b1.elbyte = 8;
-    ra_b1.size = sizeof(float2)*nimg*nimg*nslices*ndyn*nchan;
-    ra_b1.ndims = 4;
-    ra_b1.dims = (uint64_t*)malloc(4*sizeof(uint64_t));
-    ra_b1.dims[0] = nchan;
-    ra_b1.dims[1] = nimg;
-    ra_b1.dims[2] = nimg;
-    ra_b1.dims[3] = ndyn;
-    ra_b1.data = (uint8_t*)h_b1;
-    char b1file[1024];
-    snprintf(b1file, 1024, "b1_tron.ra");
-    printf("write result to %s\n", b1file);
-    ra_write(&ra_b1, b1file);
-    ra_free(&ra_b1);
-#endif
-
-    printf("img[0]: %f + %f i\n", h_img[0].x, h_img[0].y);
-
+    
     printf("free host memory\n");
 
     ra_free(&ra_nudata);
 #ifdef CUDA_HOST_MALLOC
     //cudaFreeHost(&h_nudata);
     cudaFreeHost(&h_img);
-    cudaFreeHost(&h_b1);
 #else
     //free(h_nudata);
     free(h_img);
-    free(h_b1);
 #endif
     cudaDeviceReset();
 
