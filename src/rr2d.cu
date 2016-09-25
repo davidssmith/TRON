@@ -505,25 +505,39 @@ recongar2d (float2 *h_img, const float2 *__restrict__ h_nudata,
 }
 
 
+void 
+print_usage()
+{ 
+    fprintf(stderr, "Usage: rr2d [-a] [-d dpe] [-o oversamp] [-s peskip] [-w kernwidth] <infile.ra> [outfile.ra]\n");
+    fprintf(stderr, "\t-a\t\t\tuse adjoint transform\n");
+    fprintf(stderr, "\t-d dpe\t\t\tnumber of phase encodes to skip between slices\n");
+    fprintf(stderr, "\t-o oversamp\t\tgrid oversampling factor\n");
+    fprintf(stderr, "\t-s peskip\t\tnumber of phase encodes to skip at beginning\n");
+    fprintf(stderr, "\t-w kernwidth\t\twidth of gridding kernel\n");
+}
+
 
 int
 main (int argc, char *argv[])
 {
     // for testing
-    float2 *h_nudata, *h_img, *h_b1 = NULL;
+    float2 *h_nudata, *h_img;
     float oversamp = 2.f;   // option o
     float kernwidth = 2.f;  // option w
-    int dpe = 89;  // option d
+    int dpe = 21;  // option d
     int peskip = 0; //7999;  // option s  
     int adjoint = 0; // option a
-    ra_t ra_nudata;
-    int c;
+    ra_t ra_in, ra_out;
+    int c, index;
+    char infile[1024], outfile[1024];
+  
 
     opterr = 0;
-    while ((c = getopt (argc, argv, "adosw:")) != -1) 
+    while ((c = getopt (argc, argv, "ad:ho:s:w:")) != -1)
     {
         switch (c) {
             case 'a':
+                printf("Using adjoint transformation.\n");
                 adjoint = 1;  // perform adjoint operation
                 break;
             case 'd':
@@ -538,45 +552,49 @@ main (int argc, char *argv[])
             case 'w':
                 kernwidth = atof(optarg);
                 break;
-            // case '?':
-            //     if (optopt == 'c')
-            //       fprintf (stderr, "Option -%c requires an argument.\n", optopt);
-            //     else if (isprint (optopt))
-            //       fprintf (stderr, "Unknown option `-%c'.\n", optopt);
-            //     else
-            //       fprintf (stderr,
-            //           "Unknown option character `\\x%x'.\n",
-            //             optopt);
-            //     return 1;
+            case 'h':
+                print_usage();
+                break;
             default:
-                abort ();
+                print_usage();
+                return 1;
         }
     }
-      
-    char infile[1024], outfile[1024];
-    snprintf(outfile, 1024, "img_tron.ra"); // default value
+    
 
-    if (argc > 1)
-        snprintf(infile, 1024, "%s", argv[1]);
-    else {
-        fprintf(stderr, "Usage: rr2d [-a] [-d dpe] [-o oversamp] [-s peskip] [-w kernwidth] <infile> <outfile>\n");
-        exit(1);
+    snprintf(outfile, 1024, "img_tron.ra"); // default value
+    if (argc == optind) {
+       print_usage();
+       return 1;
     }
-    printf("read non-uniform data from %s\n", );
-    ra_read(&ra_nudata, infile);
-    printf("dims = {%lld, %lld, %lld, %lld}\n", ra_nudata.dims[0],
-        ra_nudata.dims[1], ra_nudata.dims[2], ra_nudata.dims[3]);
-    int nchan = ra_nudata.dims[0];
+    for (index = optind; index < argc; index++) {
+      if (index == optind)
+        snprintf(infile, 1024, "%s", argv[index]);
+      else if (index == optind + 1)
+        snprintf(outfile, 1024, "%s", argv[index]); 
+    }
+    printf("Skipping first %d PEs.\n", peskip);  
+    printf("PE spacing set to %d.\n", dpe);
+    printf("Kernel width set to %f.\n", kernwidth);
+    printf("Oversampling factor set to %f.\n", oversamp);
+    printf("Infile: %s\n", infile);
+    printf("Outfile: %s\n", outfile);
+
+    printf("reading %s\n", infile);
+    ra_read(&ra_in, infile);
+    printf("dims = {%lld, %lld, %lld, %lld}\n", ra_in.dims[0],
+        ra_in.dims[1], ra_in.dims[2], ra_in.dims[3]);
+    int nchan = ra_in.dims[0];
     assert(nchan % 2 == 0);
-    //int necho = ra_nudata.dims[1];
-    int nro = ra_nudata.dims[2];
-    int npe = ra_nudata.dims[3];
+    //int necho = ra_in.dims[1];
+    int nro = ra_in.dims[2];
+    int npe = ra_in.dims[3];
     int ngrid = nro*oversamp;
     int npe_per_slice = nro/2;
     int nimg = 3*nro/4;
     int ndyn = (npe - npe_per_slice) / dpe;
     int nslices = 1;
-    h_nudata = (float2*)ra_nudata.data;
+    h_nudata = (float2*)ra_in.data;
 
     printf("sanity check: nudata[0] = %f + %f i\n", h_nudata[0].x, h_nudata[0].y);
 
@@ -600,25 +618,24 @@ main (int argc, char *argv[])
     printf("elapsed time: %.2f s\n", ((float)(end - start)) / CLOCKS_PER_SEC);
 
     // save results
-    ra_t ra_img;
-    ra_img.flags = 0;
-    ra_img.eltype = 4;
-    ra_img.elbyte = 8;
-    ra_img.size = sizeof(float2)*nimg*nimg*nslices*ndyn;
-    ra_img.ndims = 4;
-    ra_img.dims = (uint64_t*)malloc(4*sizeof(uint64_t));
-    ra_img.dims[0] = 1;
-    ra_img.dims[1] = nimg;
-    ra_img.dims[2] = nimg;
-    ra_img.dims[3] = ndyn;
-    ra_img.data = (uint8_t*)h_img;
+    ra_out.flags = 0;
+    ra_out.eltype = 4;
+    ra_out.elbyte = 8;
+    ra_out.size = sizeof(float2)*nimg*nimg*nslices*ndyn;
+    ra_out.ndims = 4;
+    ra_out.dims = (uint64_t*)malloc(4*sizeof(uint64_t));
+    ra_out.dims[0] = 1;
+    ra_out.dims[1] = nimg;
+    ra_out.dims[2] = nimg;
+    ra_out.dims[3] = ndyn;
+    ra_out.data = (uint8_t*)h_img;
     printf("write result to %s\n", outfile);
-    ra_write(&ra_img, outfile);
+    ra_write(&ra_out, outfile);
 
     
     printf("free host memory\n");
 
-    ra_free(&ra_nudata);
+    ra_free(&ra_in);
 #ifdef CUDA_HOST_MALLOC
     //cudaFreeHost(&h_nudata);
     cudaFreeHost(&h_img);
