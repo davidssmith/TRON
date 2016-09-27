@@ -510,7 +510,7 @@ recongar2d (float2 *h_img, const float2 *__restrict__ h_nudata,
 void 
 print_usage()
 { 
-    fprintf(stderr, "Usage: rr2d [-a] [-d dpe] [-o oversamp] [-s peskip] [-w kernwidth] <infile.ra> [outfile.ra]\n");
+    fprintf(stderr, "Usage: tron [-a] [-d dpe] [-o oversamp] [-s peskip] [-w kernwidth] <infile.ra> [outfile.ra]\n");
     fprintf(stderr, "\t-a\t\t\tuse adjoint transform\n");
     fprintf(stderr, "\t-d dpe\t\t\tnumber of phase encodes to skip between slices\n");
     fprintf(stderr, "\t-o oversamp\t\tgrid oversampling factor\n");
