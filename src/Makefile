@@ -2,15 +2,15 @@ CC=nvcc
 CFLAGS=-O3 --use_fast_math -DCUDA_HOST_MALLOC -DKERN_KB #-DWALSH_COMB
 LFLAGS=-lcufft
 
-objects = rr2d.o ra.o
+objects = tron.o ra.o
 
-all: rr2d
+all: tron
 
-rr2d: $(objects)
-	$(CC) $(LFLAGS) $(objects) -o rr2d
+tron: $(objects)
+	$(CC) $(LFLAGS) $(objects) -o tron
 
 %.o: %.cu
 	$(CC) $(CFLAGS) -dc $< -o $@
 
 clean:
-	rm -f *.o rr2d
+	rm -f *.o tron

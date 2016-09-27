@@ -35,7 +35,7 @@
 #include <stdint.h>
 #include <cufft.h>
 #include <cuda_runtime.h>
-#include "float_math.h"
+#include "float2math.h"
 #include "ra.h"
 
 // GLOBAL VARIABLES
@@ -292,6 +292,9 @@ crop (float2* d_dst, const int ndst, const float2* __restrict__ d_src, const int
 }
 
 
+extern "C" {  // don't mangle name, so can call from other languages
+
+
 __global__ void
 gridradial2d (
     float2 *udata, const float2 * __restrict__ nudata, const int ngrid,
@@ -402,7 +405,6 @@ degridradial2d (
     }
 }
 
-extern "C" {  // don't mangle name, so can call from other languages
 
 __host__ void
 recongar2d (float2 *h_img, const float2 *__restrict__ h_nudata,
