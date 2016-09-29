@@ -55,6 +55,32 @@ cudaStream_t stream[NSTREAMS];
 const float PHI = 1.9416089796736116f;
 
 
+// CUSTOM TYPES
+
+typedef struct {
+    bool multi_gpu;
+    int nstreams;
+    int nchan;
+    int nro;
+    int npe;
+    int nslices;
+    int ndyn;
+    int ngrid;
+    int nimg;
+    int npe_per_dyn;
+    int dpe;
+    int peskip;
+    float oversamp;
+    float kernwidth;
+    // array sizes
+    size_t d_nudatasize; // input data
+    size_t d_udatasize; // gridded data
+    size_t d_coilimgsize; // coil images
+    size_t d_imgsize; // coil-combined image
+    size_t d_gridsize;
+} recon_plan_radial2d;
+
+
 inline void
 gpuAssert (cudaError_t code, const char *file, int line, bool abort=true)
 {
@@ -329,7 +355,7 @@ extern "C" {  // don't mangle name, so can call from other languages
 
 
 __global__ void
-gridradial2d (
+gridradial2d (const recon_plan_radial2d *plan,
     float2 *udata, const float2 * __restrict__ nudata, const int ngrid,
     const int nchan, const int nro, const int npe, const float kernwidth,
 const int peskip)
@@ -438,9 +464,29 @@ degridradial2d (
     }
 }
 
+__host__ void
+plan_recon (recon_plan_radial2d *p,
+    int nchan, const int nro, const int npe, const int nslices, const int ndyn,
+    const int ngrid, const int nimg, const int npe_per_dyn, const int dpe, const int peskip,
+    const float oversamp, const float kernwidth)
+{
+  p->nchan = nchan;
+  p->nro = nro;
+  p->npe = npe;
+  p->nslices = nslices;
+  p->ndyn = ndyn;
+  p->ngrid = ngrid;
+  p->nimg = nimg;
+  p->npe_per_dyn = npe_per_dyn;
+  p->dpe = dpe;
+  p->peskip = peskip;
+  p->oversamp = oversamp;
+  p->kernwidth = kernwidth;
+}
+
 
 __host__ void
-recongar2d (float2 *h_img, const float2 *__restrict__ h_nudata,
+recongar2d (recon_plan_radial2d *p, float2 *h_img, const float2 *__restrict__ h_nudata,
     int nchan, const int nro, const int npe, const int nslices, const int ndyn,
     const int ngrid, const int nimg, const int npe_per_dyn, const int dpe, const int peskip,
     const float oversamp, const float kernwidth)
@@ -499,7 +545,7 @@ recongar2d (float2 *h_img, const float2 *__restrict__ h_nudata,
             printf("[dev %d, stream %d] reconstructing slice %d/%d, dyn %d/%d from PEs %d-%d (offset %ld)\n", j%ndevices, j, s+1,
                 nslices, t+1, ndyn, t*dpe, (t+1)*dpe-1, data_offset);
             cuTry(cudaMemcpyAsync(d_nudata[j], h_nudata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
-            gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j], ngrid, nchan, nro, npe_per_dyn, kernwidth, peskip+peoffset);
+            gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(p, d_udata[j], d_nudata[j], ngrid, nchan, nro, npe_per_dyn, kernwidth, peskip+peoffset);
             shifted_ifft(d_udata, j, ngrid, nchan);
             crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid, nchan);
             if (nchan > 1) {
@@ -635,7 +681,10 @@ main (int argc, char *argv[])
 
     clock_t start = clock();
     // the magic happens
-    recongar2d(h_img, h_nudata, nchan, nro, npe, nslices, ndyn, ngrid, nimg, npe_per_slice,
+    recon_plan_radial2d p;
+    plan_recon(&p, nchan, nro, npe, nslices, ndyn, ngrid, nimg, npe_per_slice,
+        dpe, peskip, oversamp, kernwidth);
+    recongar2d(&p, h_img, h_nudata, nchan, nro, npe, nslices, ndyn, ngrid, nimg, npe_per_slice,
         dpe, peskip, oversamp, kernwidth);
     clock_t end = clock();
     printf("elapsed time: %.2f s\n", ((float)(end - start)) / CLOCKS_PER_SEC);
