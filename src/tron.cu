@@ -38,12 +38,22 @@
 #include "float2math.h"
 #include "ra.h"
 
-// GLOBAL VARIABLES
+
+// CONFIGURATION PARAMETERS
 #define NSTREAMS   2
 #define NCHAN      8
 #define MAXCHAN    8
 #define MULTI_GPU  1
-#define PHI        1.9416089796736116f
+const int blocksize = 96;    // CUDA kernel parameters, TWEAK HERE to optimize
+const int gridsize = 2048;
+
+// GLOBAL VARIABLES
+cufftHandle inverse_plan[NSTREAMS];
+cudaStream_t stream[NSTREAMS];
+
+// CONSTANTS
+const float PHI = 1.9416089796736116f;
+
 
 inline void
 gpuAssert (cudaError_t code, const char *file, int line, bool abort=true)
@@ -108,6 +118,29 @@ fftshift (float2 *d_dst, const float2* __restrict__ d_src, const int n, const in
 }
 
 
+__host__ void
+ifft_init(const int j, const int ngrid, const int nchan)
+{
+  // setup FFT
+  const int rank = 2;
+  int idist = 1, odist = 1, istride = nchan, ostride = nchan;
+  int n[2] = {ngrid, ngrid};
+  int inembed[]  = {ngrid, ngrid};
+  int onembed[]  = {ngrid, ngrid};
+  cufftSafeCall(cufftPlanMany(&inverse_plan[j], rank, n, onembed, ostride, odist,
+      inembed, istride, idist, CUFFT_C2C, nchan));
+  cufftSafeCall(cufftSetStream(inverse_plan[j], stream[j]));
+}
+
+
+__host__ void
+shifted_ifft (float2 *d_udata[], const int j, const int ngrid, const int nchan)
+{
+    fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_udata[j], ngrid, nchan);
+    cufftSafeCall(cufftExecC2C(inverse_plan[j], d_udata[j], d_udata[j], CUFFT_INVERSE));
+    fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_udata[j], ngrid, nchan);
+}
+
 
 __host__ __device__ void
 powit (float2 *A, const int n, const int niters)
@@ -155,7 +188,7 @@ coilcombinesos (float2 *d_img, const float2 * __restrict__ d_coilimg, const int 
 }
 
 __global__ void
-coilcombinewalsh (float2 *d_img, const float2 * __restrict__ d_coilimg, 
+coilcombinewalsh (float2 *d_img, const float2 * __restrict__ d_coilimg,
    const int nimg, const int nchan, const int npatch)
 {
     float2 A[MAXCHAN*MAXCHAN];
@@ -414,7 +447,6 @@ recongar2d (float2 *h_img, const float2 *__restrict__ h_nudata,
 {
     float2 *d_nudata[NSTREAMS], *d_udata[NSTREAMS], *d_coilimg[NSTREAMS],
         *d_img[NSTREAMS], *d_b1[NSTREAMS], *d_apodos[NSTREAMS], *d_apod[NSTREAMS];
-    cudaStream_t stream[NSTREAMS];
 
     int ndevices;
     if (MULTI_GPU) {
@@ -425,8 +457,7 @@ recongar2d (float2 *h_img, const float2 *__restrict__ h_nudata,
     printf("NSTREAMS = %d\n", NSTREAMS);
     printf("using %d CUDA devices\n", ndevices);
 
-    int blocksize = 96;    // CUDA kernel parameters, TWEAK HERE to optimize
-    int gridsize = 2048;
+
     printf("kernels configured with %d blocks of %d threads\n", gridsize, blocksize);
 
     // array sizes
@@ -436,21 +467,13 @@ recongar2d (float2 *h_img, const float2 *__restrict__ h_nudata,
     const size_t d_imgsize = nimg*nimg*sizeof(float2); // coil-combined image
     const size_t d_gridsize = ngrid*ngrid*sizeof(float2);
 
-    // setup FFT
-    cufftHandle inverse_plan[NSTREAMS];
-    const int rank = 2;
-    int idist = 1, odist = 1, istride = nchan, ostride = nchan;
-    int n[2] = {ngrid, ngrid};
-    int inembed[]  = {ngrid, ngrid};
-    int onembed[]  = {ngrid, ngrid};
+
 
     for (int j = 0; j < NSTREAMS; ++j) // allocate data and initialize apodization and kernel texture
     {
         if (MULTI_GPU) cudaSetDevice(j % ndevices);
         cuTry(cudaStreamCreate(&stream[j]));
-        cufftSafeCall(cufftPlanMany(&inverse_plan[j], rank, n, onembed, ostride, odist,
-            inembed, istride, idist, CUFFT_C2C, nchan));
-        cufftSafeCall(cufftSetStream(inverse_plan[j], stream[j]));
+        ifft_init(j, ngrid, nchan);
         cuTry(cudaMalloc((void **)&d_nudata[j], d_nudatasize));
         cuTry(cudaMalloc((void **)&d_udata[j], d_udatasize));
         cuTry(cudaMemset(d_udata[j], 0, d_udatasize));
@@ -477,9 +500,7 @@ recongar2d (float2 *h_img, const float2 *__restrict__ h_nudata,
                 nslices, t+1, ndyn, t*dpe, (t+1)*dpe-1, data_offset);
             cuTry(cudaMemcpyAsync(d_nudata[j], h_nudata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
             gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j], ngrid, nchan, nro, npe_per_dyn, kernwidth, peskip+peoffset);
-            fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_udata[j], ngrid, nchan);
-            cufftSafeCall(cufftExecC2C(inverse_plan[j], d_udata[j], d_udata[j], CUFFT_INVERSE));
-            fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_udata[j], ngrid, nchan);
+            shifted_ifft(d_udata, j, ngrid, nchan);
             crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid, nchan);
             if (nchan > 1) {
 #ifdef WALSH_COMB
@@ -507,9 +528,9 @@ recongar2d (float2 *h_img, const float2 *__restrict__ h_nudata,
 }
 
 
-void 
+void
 print_usage()
-{ 
+{
     fprintf(stderr, "Usage: tron [-a] [-d dpe] [-o oversamp] [-s peskip] [-w kernwidth] <infile.ra> [outfile.ra]\n");
     fprintf(stderr, "\t-a\t\t\tuse adjoint transform\n");
     fprintf(stderr, "\t-d dpe\t\t\tnumber of phase encodes to skip between slices\n");
@@ -527,12 +548,12 @@ main (int argc, char *argv[])
     float oversamp = 2.f;   // option o
     float kernwidth = 2.f;  // option w
     int dpe = 21;  // option d
-    int peskip = 0; //7999;  // option s  
+    int peskip = 0; //7999;  // option s
     int adjoint = 0; // option a
     ra_t ra_in, ra_out;
     int c, index;
     char infile[1024], outfile[1024];
-  
+
 
     opterr = 0;
     while ((c = getopt (argc, argv, "ad:ho:s:w:")) != -1)
@@ -547,7 +568,7 @@ main (int argc, char *argv[])
                 break;
             case 'o':
                 oversamp = atof(optarg);
-                break;      
+                break;
             case 's':
                 peskip = atoi(optarg);
                 break;
@@ -562,7 +583,7 @@ main (int argc, char *argv[])
                 return 1;
         }
     }
-    
+
 
     snprintf(outfile, 1024, "img_tron.ra"); // default value
     if (argc == optind) {
@@ -573,9 +594,9 @@ main (int argc, char *argv[])
       if (index == optind)
         snprintf(infile, 1024, "%s", argv[index]);
       else if (index == optind + 1)
-        snprintf(outfile, 1024, "%s", argv[index]); 
+        snprintf(outfile, 1024, "%s", argv[index]);
     }
-    printf("Skipping first %d PEs.\n", peskip);  
+    printf("Skipping first %d PEs.\n", peskip);
     printf("PE spacing set to %d.\n", dpe);
     printf("Kernel width set to %f.\n", kernwidth);
     printf("Oversampling factor set to %f.\n", oversamp);
@@ -634,7 +655,7 @@ main (int argc, char *argv[])
     printf("write result to %s\n", outfile);
     ra_write(&ra_out, outfile);
 
-    
+
     printf("free host memory\n");
 
     ra_free(&ra_in);
