@@ -118,7 +118,7 @@ inline void __cufftSafeCall (cufftResult err, const char *file, const int line)
 }
 
 __global__ void
-fftshift (float2 *dst, const float2* __restrict__ src, const int n, const int nchan)
+fftshift (float2 *dst, const int n, const int nchan)
 {
     // TODO: eliminate superfluous argument
     float2 tmp;
@@ -161,9 +161,9 @@ ifft_init(const int j, const int ngrid, const int nchan)
 __host__ void
 shifted_ifft (float2 *udata[], const int j, const int ngrid, const int nchan)
 {
-    fftshift<<<gridsize,blocksize,0,stream[j]>>>(udata[j], udata[j], ngrid, nchan);
+    fftshift<<<gridsize,blocksize,0,stream[j]>>>(udata[j], ngrid, nchan);
     cufftSafeCall(cufftExecC2C(inverse_plan[j], udata[j], udata[j], CUFFT_INVERSE));
-    fftshift<<<gridsize,blocksize,0,stream[j]>>>(udata[j], udata[j], ngrid, nchan);
+    fftshift<<<gridsize,blocksize,0,stream[j]>>>(udata[j], ngrid, nchan);
 }
 
 
@@ -310,7 +310,7 @@ fillapod (float2 *d_apod, const int n, const float kernwidth)
     cufftHandle inverse_plan_apod;
     cufftSafeCall(cufftPlan2d(&inverse_plan_apod, n, n, CUFFT_C2C));
     cufftSafeCall(cufftExecC2C(inverse_plan_apod, d_apod, d_apod, CUFFT_INVERSE));
-    fftshift<<<n,n>>>(d_apod, d_apod, n, 1);
+    fftshift<<<n,n>>>(d_apod, n, 1);
     cuTry(cudaMemcpy(h_apod, d_apod, d_imgsize, cudaMemcpyDeviceToHost));
 
     float maxval = 0.f;
@@ -636,7 +636,7 @@ main (int argc, char *argv[])
     npe_per_dyn = nro/2;
     nimg = 3*nro/4;
     nx = nimg;
-    ny = nimg;
+    ny = nimg;  // TODO: neplace nimg with nx/ny everywhere
 
     ndyn = (npe - npe_per_dyn) / dpe;
     nz = 1;
