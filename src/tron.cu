@@ -48,30 +48,50 @@ const int blocksize = 96;    // CUDA kernel parameters, TWEAK HERE to optimize
 const int gridsize = 2048;
 
 // GLOBAL VARIABLES
+float2 *d_nudata[NSTREAMS], *d_udata[NSTREAMS], *d_coilimg[NSTREAMS],
+    *d_img[NSTREAMS], *d_b1[NSTREAMS], *d_apodos[NSTREAMS], *d_apod[NSTREAMS];
 cufftHandle inverse_plan[NSTREAMS];
 cudaStream_t stream[NSTREAMS];
+int ndevices;
 
 // CONSTANTS
 const float PHI = 1.9416089796736116f;
+// #define DIM_CHAN 0
+// #define DIM_ECHO 1
+// #define DIM_RO   2
+// #define DIM_X    2
+// #define DIM_PE   3
+// #define DIM_Y    3
+// #define DIM_Z    4
+
 
 
 // CUSTOM TYPES
-
+// int nchan = ra_in.dims[0];
+// assert(nchan % 2 == 0);
+// //int necho = ra_in.dims[1];
+// int nro = ra_in.dims[2];
+// int npe = ra_in.dims[3];
 typedef struct {
     bool multi_gpu;
     int nstreams;
-    int nchan;
-    int nro;
-    int npe;
-    int nslices;
-    int ndyn;
-    int ngrid;
-    int nimg;
     int npe_per_dyn;
     int dpe;
     int peskip;
     float oversamp;
     float kernwidth;
+    // int nudims[5];
+    // int udims[5];
+    int nchan;
+    int necho;
+    int ndyn;
+    int nro;
+    int npe;
+    int nx;
+    int ny;
+    int nz;
+    int ngrid;
+
     // array sizes
     size_t d_nudatasize; // input data
     size_t d_udatasize; // gridded data
@@ -120,8 +140,9 @@ inline void __cufftSafeCall (cufftResult err, const char *file, const int line)
 }
 
 __global__ void
-fftshift (float2 *d_dst, const float2* __restrict__ d_src, const int n, const int nchan)
+fftshift (float2 *dst, const float2* __restrict__ src, const int n, const int nchan)
 {
+    // TODO: eliminate superfluous argument
     float2 tmp;
     int dn = n / 2;
     for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < dn*dn; id += blockDim.x * gridDim.x)
@@ -133,12 +154,12 @@ fftshift (float2 *d_dst, const float2* __restrict__ d_src, const int n, const in
         int id3 = (x + dn)*n + y + dn;
         int id4 = x*n + y + dn;
         for (int c = 0; c < nchan; ++c) {
-            tmp = d_dst[id1*nchan + c]; // 1 <-> 3
-            d_dst[id1*nchan + c] = d_dst[id3*nchan + c];
-            d_dst[id3*nchan + c] = tmp;
-            tmp = d_dst[id2*nchan + c]; // 2 <-> 4
-            d_dst[id2*nchan + c] = d_dst[id4*nchan + c];
-            d_dst[id4*nchan + c] = tmp;
+            tmp = dst[id1*nchan + c]; // 1 <-> 3
+            dst[id1*nchan + c] = dst[id3*nchan + c];
+            dst[id3*nchan + c] = tmp;
+            tmp = dst[id2*nchan + c]; // 2 <-> 4
+            dst[id2*nchan + c] = dst[id4*nchan + c];
+            dst[id4*nchan + c] = tmp;
         }
     }
 }
@@ -160,15 +181,15 @@ ifft_init(const int j, const int ngrid, const int nchan)
 
 
 __host__ void
-shifted_ifft (float2 *d_udata[], const int j, const int ngrid, const int nchan)
+shifted_ifft (float2 *udata[], const int j, const int ngrid, const int nchan)
 {
-    fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_udata[j], ngrid, nchan);
-    cufftSafeCall(cufftExecC2C(inverse_plan[j], d_udata[j], d_udata[j], CUFFT_INVERSE));
-    fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_udata[j], ngrid, nchan);
+    fftshift<<<gridsize,blocksize,0,stream[j]>>>(udata[j], udata[j], ngrid, nchan);
+    cufftSafeCall(cufftExecC2C(inverse_plan[j], udata[j], udata[j], CUFFT_INVERSE));
+    fftshift<<<gridsize,blocksize,0,stream[j]>>>(udata[j], udata[j], ngrid, nchan);
 }
 
 
-__host__ __device__ void
+__device__ void
 powit (float2 *A, const int n, const int niters)
 {
     /* replace first column of square matrix A with largest eigenvector */
@@ -202,19 +223,19 @@ powit (float2 *A, const int n, const int niters)
 }
 
 __global__ void
-coilcombinesos (float2 *d_img, const float2 * __restrict__ d_coilimg, const int nimg, const int nchan)
+coilcombinesos (float2 *img, const float2 * __restrict__ coilimg, const int nimg, const int nchan)
 {
     for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nimg*nimg; id += blockDim.x * gridDim.x) {
         float val = 0.f;
         for (int k = nchan*id; k < nchan*(id+1); ++k)
-            val += norm(d_coilimg[k]);
-        d_img[id].x = sqrtf(val);
-        d_img[id].y = 0.f;
+            val += norm(coilimg[k]);
+        img[id].x = sqrtf(val);
+        img[id].y = 0.f;
     }
 }
 
 __global__ void
-coilcombinewalsh (float2 *d_img, const float2 * __restrict__ d_coilimg,
+coilcombinewalsh (float2 *img, const float2 * __restrict__ coilimg,
    const int nimg, const int nchan, const int npatch)
 {
     float2 A[MAXCHAN*MAXCHAN];
@@ -229,12 +250,12 @@ coilcombinewalsh (float2 *d_img, const float2 * __restrict__ d_coilimg,
                 int offset = nchan*(px*nimg + py);
                 for (int c2 = 0; c2 < nchan; ++c2)
                     for (int c1 = 0; c1 < nchan; ++c1)
-                        A[c1*nchan + c2] += d_coilimg[offset+c1]*conj(d_coilimg[offset+c2]);
+                        A[c1*nchan + c2] += coilimg[offset+c1]*conj(coilimg[offset+c2]);
             }
         powit(A, nchan, 5);
-        d_img[id] = make_float2(0.f, 0.f);
+        img[id] = make_float2(0.f, 0.f);
         for (int c = 0; c < nchan; ++c)
-            d_img[id] += conj(A[c])*d_coilimg[nchan*id+c]; // * cexpf(-maxphase);
+            img[id] += conj(A[c])*coilimg[nchan*id+c]; // * cexpf(-maxphase);
 // #ifdef CALC_B1
 //         for (int c = 0; c < NCHAN; ++c) {
 //             d_b1[nchan*id + c] = sqrtf(s[0])*U[nchan*c];
@@ -278,7 +299,7 @@ gridkernel (const float dx, const float dy)
 #endif
 }
 
-__host__ __device__ inline float
+__device__ inline float
 modang (const float x)   /* rescale arbitrary angles to [0,2PI] interval */
 {
     const float TWOPI = 2.f*M_PI;
@@ -329,15 +350,16 @@ fillapod (float2 *d_apod, const int n, const float kernwidth)
 }
 
 __global__ void
-deapodize (float2 *d_img, const float2 * __restrict__ d_apod, const int nimg, const int nchan)
+deapodize (float2 *img, const float2 * __restrict__ apod, const int nimg, const int nchan)
 {
     for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nimg*nimg; id += blockDim.x * gridDim.x)
         for (int c = 0; c < nchan; ++c)
-            d_img[nchan*id+c] *= d_apod[id].x; // took magnitude prior
+            img[nchan*id+c] *= apod[id].x; // took magnitude prior
 }
 
+
 __global__ void
-crop (float2* d_dst, const int ndst, const float2* __restrict__ d_src, const int nsrc, const int nchan)
+crop (float2* dst, const int ndst, const float2* __restrict__ src, const int nsrc, const int nchan)
 {
     const int w = (nsrc - ndst) / 2;
     for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < ndst*ndst; id += blockDim.x * gridDim.x)
@@ -346,7 +368,7 @@ crop (float2* d_dst, const int ndst, const float2* __restrict__ d_src, const int
         int ydst = id % ndst;
         int srcid = (xdst + w)*nsrc + ydst + w;
         for (int c = 0; c < nchan; ++c)
-            d_dst[nchan*id + c] = d_src[nchan*srcid + c];
+            dst[nchan*id + c] = src[nchan*srcid + c];
     }
 }
 
@@ -471,94 +493,62 @@ plan_recon (recon_plan_radial2d *p,
     const float oversamp, const float kernwidth)
 {
   p->nchan = nchan;
+  p->necho = 1;
   p->nro = nro;
-  p->npe = npe;
-  p->nslices = nslices;
+  p->npe =  npe;
+  p->nx = nimg;
+  p->ny = nimg;
+  p->nz = nslices;
   p->ndyn = ndyn;
   p->ngrid = ngrid;
-  p->nimg = nimg;
   p->npe_per_dyn = npe_per_dyn;
   p->dpe = dpe;
   p->peskip = peskip;
   p->oversamp = oversamp;
   p->kernwidth = kernwidth;
+
+  // array sizes
+  p->d_nudatasize = nchan*nro*npe_per_dyn*sizeof(float2);  // input data
+  p->d_udatasize = nchan*ngrid*ngrid*sizeof(float2); // gridded data
+  p->d_coilimgsize = nchan*nimg*nimg*sizeof(float2); // coil images
+  p->d_imgsize = nimg*nimg*sizeof(float2); // coil-combined image
+  p->d_gridsize = ngrid*ngrid*sizeof(float2);
 }
 
-
-__host__ void
-recongar2d (recon_plan_radial2d *p, float2 *h_img, const float2 *__restrict__ h_nudata,
-    int nchan, const int nro, const int npe, const int nslices, const int ndyn,
-    const int ngrid, const int nimg, const int npe_per_dyn, const int dpe, const int peskip,
-    const float oversamp, const float kernwidth)
+void
+tron_init(recon_plan_radial2d *p)
 {
-    float2 *d_nudata[NSTREAMS], *d_udata[NSTREAMS], *d_coilimg[NSTREAMS],
-        *d_img[NSTREAMS], *d_b1[NSTREAMS], *d_apodos[NSTREAMS], *d_apod[NSTREAMS];
+  if (MULTI_GPU) {
+    cuTry(cudaGetDeviceCount(&ndevices));
+  } else
+    ndevices = 1;
+  printf("MULTI_GPU = %d\n", MULTI_GPU);
+  printf("NSTREAMS = %d\n", NSTREAMS);
+  printf("using %d CUDA devices\n", ndevices);
+  printf("kernels configured with %d blocks of %d threads\n", gridsize, blocksize);
 
-    int ndevices;
-    if (MULTI_GPU) {
-    	cuTry(cudaGetDeviceCount(&ndevices));
-    } else
-    	ndevices = 1;
-    printf("MULTI_GPU = %d\n", MULTI_GPU);
-    printf("NSTREAMS = %d\n", NSTREAMS);
-    printf("using %d CUDA devices\n", ndevices);
+  for (int j = 0; j < NSTREAMS; ++j) // allocate data and initialize apodization and kernel texture
+  {
+      if (MULTI_GPU) cudaSetDevice(j % ndevices);
+      cuTry(cudaStreamCreate(&stream[j]));
+      ifft_init(j, p->ngrid, p->nchan);
+      cuTry(cudaMalloc((void **)&d_nudata[j], p->d_nudatasize));
+      cuTry(cudaMalloc((void **)&d_udata[j], p->d_udatasize));
+      // cuTry(cudaMemset(d_udata[j], 0, p->d_udatasize));
+      cuTry(cudaMalloc((void **)&d_coilimg[j], p->d_coilimgsize));
+      cuTry(cudaMalloc((void **)&d_b1[j], p->d_coilimgsize));
+      cuTry(cudaMalloc((void **)&d_img[j], p->d_imgsize));
+      cuTry(cudaMalloc((void **)&d_apodos[j], p->d_gridsize));
+      cuTry(cudaMalloc((void **)&d_apod[j], p->d_imgsize));
+      fillapod(d_apodos[j], p->ngrid, p->kernwidth);
+      crop<<<p->nx,p->ny>>>(d_apod[j], p->nx, d_apodos[j], p->ngrid, 1);
+      cuTry(cudaFree(d_apodos[j]));
+  }
+}
 
-
-    printf("kernels configured with %d blocks of %d threads\n", gridsize, blocksize);
-
-    // array sizes
-    const size_t d_nudatasize = nchan*nro*npe_per_dyn*sizeof(float2);  // input data
-    const size_t d_udatasize = nchan*ngrid*ngrid*sizeof(float2); // gridded data
-    const size_t d_coilimgsize = nchan*nimg*nimg*sizeof(float2); // coil images
-    const size_t d_imgsize = nimg*nimg*sizeof(float2); // coil-combined image
-    const size_t d_gridsize = ngrid*ngrid*sizeof(float2);
-
-
-
-    for (int j = 0; j < NSTREAMS; ++j) // allocate data and initialize apodization and kernel texture
-    {
-        if (MULTI_GPU) cudaSetDevice(j % ndevices);
-        cuTry(cudaStreamCreate(&stream[j]));
-        ifft_init(j, ngrid, nchan);
-        cuTry(cudaMalloc((void **)&d_nudata[j], d_nudatasize));
-        cuTry(cudaMalloc((void **)&d_udata[j], d_udatasize));
-        cuTry(cudaMemset(d_udata[j], 0, d_udatasize));
-        cuTry(cudaMalloc((void **)&d_coilimg[j], d_coilimgsize));
-        cuTry(cudaMalloc((void **)&d_b1[j], d_coilimgsize));
-        cuTry(cudaMalloc((void **)&d_img[j], d_imgsize));
-        cuTry(cudaMalloc((void **)&d_apodos[j], d_gridsize));
-        cuTry(cudaMalloc((void **)&d_apod[j], d_imgsize));
-        fillapod(d_apodos[j], ngrid, kernwidth);
-        crop<<<nimg,nimg>>>(d_apod[j], nimg, d_apodos[j], ngrid, 1);
-        cuTry(cudaFree(d_apodos[j]));
-    }
-
-    printf("iterating over %d slices\n", nslices);
-    for (int s = 0; s < nslices; ++s) // MAIN LOOP
-        for (int t = 0; t < ndyn; ++t)
-        {
-            int j = t % NSTREAMS; // stream
-            if (MULTI_GPU) cudaSetDevice(j % ndevices);
-            int peoffset = t*dpe;
-            size_t data_offset = nchan*nro*(npe*s + peoffset);
-            size_t img_offset = nimg*nimg*(ndyn*s + t);
-            printf("[dev %d, stream %d] reconstructing slice %d/%d, dyn %d/%d from PEs %d-%d (offset %ld)\n", j%ndevices, j, s+1,
-                nslices, t+1, ndyn, t*dpe, (t+1)*dpe-1, data_offset);
-            cuTry(cudaMemcpyAsync(d_nudata[j], h_nudata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
-            gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(p, d_udata[j], d_nudata[j], ngrid, nchan, nro, npe_per_dyn, kernwidth, peskip+peoffset);
-            shifted_ifft(d_udata, j, ngrid, nchan);
-            crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid, nchan);
-            if (nchan > 1) {
-#ifdef WALSH_COMB
-                coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_b1[j], d_coilimg[j], nimg, nchan, 1); // 0 works, 1 good, 3 optimal
-#else
-                coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan);
-#endif
-            }
-            deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nimg, 1);
-            cuTry(cudaMemcpyAsync(h_img + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
-        }
-
+void
+tron_shutdown()
+{
     printf("freeing device memory\n");
     for (int j = 0; j < NSTREAMS; ++j) { // free allocated memory
         if (MULTI_GPU) cudaSetDevice(j % ndevices);
@@ -571,6 +561,49 @@ recongar2d (recon_plan_radial2d *p, float2 *h_img, const float2 *__restrict__ h_
         cudaStreamDestroy(stream[j]);
     }
 }
+
+
+__host__ void
+recongar2d (recon_plan_radial2d *p, float2 *h_img, const float2 *__restrict__ h_nudata,
+    int nchan, const int nro, const int npe, const int nslices, const int ndyn,
+    const int ngrid, const int nimg, const int npe_per_dyn, const int dpe, const int peskip,
+    const float oversamp, const float kernwidth)
+{
+
+    tron_init(p);
+
+    printf("iterating over %d slices\n", nslices);
+    for (int s = 0; s < nslices; ++s) // MAIN LOOP
+        for (int t = 0; t < ndyn; ++t)
+        {
+            int j = t % NSTREAMS; // stream
+            if (MULTI_GPU) cudaSetDevice(j % ndevices);
+            int peoffset = t*dpe;
+            size_t data_offset = nchan*nro*(npe*s + peoffset);
+            size_t img_offset = nimg*nimg*(ndyn*s + t);
+            printf("[dev %d, stream %d] reconstructing slice %d/%d, dyn %d/%d from PEs %d-%d (offset %ld)\n", j%ndevices, j, s+1,
+                nslices, t+1, ndyn, t*dpe, (t+1)*dpe-1, data_offset);
+            cuTry(cudaMemcpyAsync(d_nudata[j], h_nudata + data_offset, p->d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
+            gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(p, d_udata[j], d_nudata[j], ngrid, nchan, nro, npe_per_dyn, kernwidth, peskip+peoffset);
+            shifted_ifft(d_udata, j, ngrid, nchan);
+            crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid, nchan);
+            if (nchan > 1) {
+#ifdef WALSH_COMB
+                coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_b1[j], d_coilimg[j], nimg, nchan, 1); // 0 works, 1 good, 3 optimal
+#else
+                coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan);
+#endif
+            }
+            deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nimg, 1);
+            cuTry(cudaMemcpyAsync(h_img + img_offset, d_img[j], p->d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
+        }
+
+    tron_shutdown();
+}
+
+
+
+
 }
 
 
