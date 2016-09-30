@@ -53,21 +53,22 @@ float2 *d_nudata[NSTREAMS], *d_udata[NSTREAMS], *d_coilimg[NSTREAMS],
 cufftHandle inverse_plan[NSTREAMS];
 cudaStream_t stream[NSTREAMS];
 int ndevices;
-//bool multi_gpu;   // TODO: make some of the compile-time constants into vars
-//int nstreams;
-int npe_per_dyn;
+int npe_per_frame;
 int dpe;
 int peskip;
+
+// non-uniform data shape: nchan x nrep x nro x npe
+// uniform data shape:     nchan x nrep x ngrid x ngrid x nz
+// image shape:            nchan x nrep x nimg x nimg x nz
+// coil-combined image:            nrep x nimg x nimg x nz
 int nchan;
-int necho;
-int ndyn;
+int nrep;  // # of repeated measurements of same trajectory
 int nro;
 int npe;
-int nimg;
-int nx;
-int ny;
-int nz;
 int ngrid;
+int nz;
+int nimg;
+
 float oversamp;  // TODO: compute ngrid from nx, ny and oversamp
 float kernwidth;
 size_t d_nudatasize; // size in bytes of non-uniform data
@@ -120,7 +121,6 @@ inline void __cufftSafeCall (cufftResult err, const char *file, const int line)
 __global__ void
 fftshift (float2 *dst, const int n, const int nchan)
 {
-    // TODO: eliminate superfluous argument
     float2 tmp;
     int dn = n / 2;
     for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < dn*dn; id += blockDim.x * gridDim.x)
@@ -486,7 +486,7 @@ tron_init()
       cuTry(cudaMalloc((void **)&d_apodos[j], d_gridsize));
       cuTry(cudaMalloc((void **)&d_apod[j], d_imgsize));
       fillapod(d_apodos[j], ngrid, kernwidth);
-      crop<<<nx,ny>>>(d_apod[j], nx, d_apodos[j], ngrid, 1);
+      crop<<<nimg,nimg>>>(d_apod[j], nimg, d_apodos[j], ngrid, 1);
       cuTry(cudaFree(d_apodos[j]));
   }
 }
@@ -516,17 +516,19 @@ recongar2d (float2 *h_img, const float2 *__restrict__ h_nudata)
 
     printf("iterating over %d slices\n", nz);
     for (int s = 0; s < nz; ++s) // MAIN LOOP
-        for (int t = 0; t < ndyn; ++t)
+        for (int t = 0; t < nrep; ++t)
         {
             int j = t % NSTREAMS; // stream
             if (MULTI_GPU) cudaSetDevice(j % ndevices);
             int peoffset = t*dpe;
             size_t data_offset = nchan*nro*(npe*s + peoffset);
-            size_t img_offset = nimg*nimg*(ndyn*s + t);
+            size_t img_offset = nimg*nimg*(nrep*s + t);
+
             printf("[dev %d, stream %d] reconstructing slice %d/%d, dyn %d/%d from PEs %d-%d (offset %ld)\n", j%ndevices, j, s+1,
-                nz, t+1, ndyn, t*dpe, (t+1)*dpe-1, data_offset);
+                nz, t+1, nrep, t*dpe, (t+1)*dpe-1, data_offset);
+
             cuTry(cudaMemcpyAsync(d_nudata[j], h_nudata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
-            gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j], ngrid, nchan, nro, npe_per_dyn, kernwidth, peskip+peoffset);
+            gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j], ngrid, nchan, nro, npe_per_frame, kernwidth, peskip+peoffset);
             shifted_ifft(d_udata, j, ngrid, nchan);
             crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid, nchan);
             if (nchan > 1) {
@@ -628,22 +630,22 @@ main (int argc, char *argv[])
     printf("dims = {%lld, %lld, %lld, %lld}\n", ra_in.dims[0],
         ra_in.dims[1], ra_in.dims[2], ra_in.dims[3]);
     nchan = ra_in.dims[0];
-    assert(nchan % 2 == 0);
-    necho = ra_in.dims[1];
+    nrep = ra_in.dims[1];
     nro = ra_in.dims[2];
     npe = ra_in.dims[3];
     ngrid = nro*oversamp;
-    npe_per_dyn = nro/2;
+    npe_per_frame = nro/2;
     nimg = 3*nro/4;
-    nx = nimg;
-    ny = nimg;  // TODO: neplace nimg with nx/ny everywhere
-
-    ndyn = (npe - npe_per_dyn) / dpe;
+    nrep = (npe - npe_per_frame) / dpe;
     nz = 1;
     h_nudata = (float2*)ra_in.data;
 
+    assert(nchan % 2 == 0);
+
+
+
     // array sizes
-    d_nudatasize = nchan*nro*npe_per_dyn*sizeof(float2);  // input data
+    d_nudatasize = nchan*nro*npe_per_frame*sizeof(float2);  // input data
     d_udatasize = nchan*ngrid*ngrid*sizeof(float2); // gridded data
     d_coilimgsize = nchan*nimg*nimg*sizeof(float2); // coil images
     d_imgsize = nimg*nimg*sizeof(float2); // coil-combined image
@@ -654,17 +656,20 @@ main (int argc, char *argv[])
     // allocate pinned memory, which allows async calls
 #ifdef CUDA_HOST_MALLOC
     //cuTry(cudaMallocHost((void**)&h_nudata, nchan*nro*npe*sizeof(float2)));
-    cuTry(cudaMallocHost((void**)&h_img, ndyn*nx*ny*nz*sizeof(float2)));
+    cuTry(cudaMallocHost((void**)&h_img, nrep*nimg*nimg*nz*sizeof(float2)));
 #else
     //h_nudata = (float2*)malloc(nchan*nro*npe*sizeof(float2));
-    h_img = (float2*)malloc(ndyn*nx*ny*nz*sizeof(float2));
+    h_img = (float2*)malloc(nrep*nimg*nimg*nz*sizeof(float2));
 #endif
 
 
 
     clock_t start = clock();
+
     // the magic happens
     recongar2d(h_img, h_nudata);
+
+
     clock_t end = clock();
     printf("elapsed time: %.2f s\n", ((float)(end - start)) / CLOCKS_PER_SEC);
 
@@ -672,13 +677,13 @@ main (int argc, char *argv[])
     ra_out.flags = 0;
     ra_out.eltype = 4;
     ra_out.elbyte = 8;
-    ra_out.size = sizeof(float2)*nx*ny*nz*ndyn;
+    ra_out.size = sizeof(float2)*nrep*nimg*nimg*nz;
     ra_out.ndims = 4;
     ra_out.dims = (uint64_t*)malloc(4*sizeof(uint64_t));
-    ra_out.dims[0] = 1;
+    ra_out.dims[0] = nrep;
     ra_out.dims[1] = nimg;
     ra_out.dims[2] = nimg;
-    ra_out.dims[3] = ndyn;
+    ra_out.dims[3] = nz;
     ra_out.data = (uint8_t*)h_img;
     printf("write result to %s\n", outfile);
     ra_write(&ra_out, outfile);
