@@ -524,11 +524,12 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata)
     tron_init();
 
     printf("iterating over %d slices\n", nz);
-    for (int s = 0; s < nz; ++s) // MAIN LOOP
+    for (int s = 0; s < nz; ++s)
         for (int t = 0; t < nrep; ++t)
         {
-            int j = t % NSTREAMS; // stream
+            int j = t % NSTREAMS; // j is stream index
             if (MULTI_GPU) cudaSetDevice(j % ndevices);
+
             int peoffset = t*dpe;
             size_t data_offset = nchan*nro*(npe*s + peoffset);
             size_t img_offset = nimg*nimg*(nrep*s + t);
@@ -540,14 +541,18 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata)
             gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j], ngrid, nchan, nro, npe_per_frame, kernwidth, peskip+peoffset);
             shifted_ifft(d_udata, j, ngrid, nchan);
             crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid, nchan);
+
             if (nchan > 1) {
 #ifdef WALSH_COMB
-                coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_b1[j], d_coilimg[j], nimg, nchan, 1); // 0 works, 1 good, 3 optimal
+                coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan, 1); // 0 works, 1 good, 3 optimal
 #else
                 coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan);
 #endif
             }
+
             deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nimg, 1);
+
+
             cuTry(cudaMemcpyAsync(h_img + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
         }
 
