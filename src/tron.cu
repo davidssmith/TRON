@@ -54,8 +54,9 @@ cufftHandle inverse_plan[NSTREAMS];
 cudaStream_t stream[NSTREAMS];
 int ndevices;
 int npe_per_frame;
-int dpe;
-int peskip;
+int dpe = 21;
+int peskip = 0;
+int adjoint = 0;
 
 // non-uniform data shape: nchan x nrep x nro x npe
 // uniform data shape:     nchan x nrep x ngrid x ngrid x nz
@@ -69,8 +70,8 @@ int ngrid;
 int nz;
 int nimg;
 
-float oversamp;  // TODO: compute ngrid from nx, ny and oversamp
-float kernwidth;
+float oversamp = 2.f;  // TODO: compute ngrid from nx, ny and oversamp
+float kernwidth = 2.f;
 size_t d_nudatasize; // size in bytes of non-uniform data
 size_t d_udatasize; // size in bytes of gridded data
 size_t d_coilimgsize; // coil images
@@ -472,6 +473,14 @@ tron_init()
   printf("using %d CUDA devices\n", ndevices);
   printf("kernels configured with %d blocks of %d threads\n", gridsize, blocksize);
 
+  // array sizes
+  d_nudatasize = nchan*nro*npe_per_frame*sizeof(float2);  // input data
+  d_udatasize = nchan*ngrid*ngrid*sizeof(float2); // gridded data
+  d_coilimgsize = nchan*nimg*nimg*sizeof(float2); // coil images
+  d_imgsize = nimg*nimg*sizeof(float2); // coil-combined image
+  d_gridsize = ngrid*ngrid*sizeof(float2);
+
+
   for (int j = 0; j < NSTREAMS; ++j) // allocate data and initialize apodization and kernel texture
   {
       if (MULTI_GPU) cudaSetDevice(j % ndevices);
@@ -509,7 +518,7 @@ tron_shutdown()
 
 
 __host__ void
-recongar2d (float2 *h_img, const float2 *__restrict__ h_nudata)
+recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata)
 {
 
     tron_init();
@@ -569,11 +578,7 @@ main (int argc, char *argv[])
 {
     // for testing
     float2 *h_nudata, *h_img;
-    oversamp = 2.f;   // option o
-    kernwidth = 2.f;  // option w
-    dpe = 21;  // option d
-    peskip = 0; //7999;  // option s
-    int adjoint = 0; // option a
+
     ra_t ra_in, ra_out;
     int c, index;
     char infile[1024], outfile[1024];
@@ -642,15 +647,6 @@ main (int argc, char *argv[])
 
     assert(nchan % 2 == 0);
 
-
-
-    // array sizes
-    d_nudatasize = nchan*nro*npe_per_frame*sizeof(float2);  // input data
-    d_udatasize = nchan*ngrid*ngrid*sizeof(float2); // gridded data
-    d_coilimgsize = nchan*nimg*nimg*sizeof(float2); // coil images
-    d_imgsize = nimg*nimg*sizeof(float2); // coil-combined image
-    d_gridsize = ngrid*ngrid*sizeof(float2);
-
     printf("sanity check: nudata[0] = %f + %f i\n", h_nudata[0].x, h_nudata[0].y);
 
     // allocate pinned memory, which allows async calls
@@ -667,7 +663,7 @@ main (int argc, char *argv[])
     clock_t start = clock();
 
     // the magic happens
-    recongar2d(h_img, h_nudata);
+    recon_gar2d(h_img, h_nudata);
 
 
     clock_t end = clock();
