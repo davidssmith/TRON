@@ -1,5 +1,5 @@
 CC=nvcc
-CFLAGS=-O3 --use_fast_math -D_FORCE_INLINES -DCUDA_HOST_MALLOC -DKERN_KB -DWALSH_COMB
+CFLAGS=-O3 --use_fast_math -D_FORCE_INLINES -DCUDA_HOST_MALLOC -DKERN_KB # -DWALSH_COMB
 LFLAGS=-lcufft
 
 objects = tron.o ra.o

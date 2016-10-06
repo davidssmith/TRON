@@ -57,6 +57,7 @@ int npe_per_frame;
 int dpe = 21;
 int peskip = 0;
 int adjoint = 0;
+int use_walsh = 0;
 
 // non-uniform data shape: nchan x nrep x nro x npe
 // uniform data shape:     nchan x nrep x ngrid x ngrid x nz
@@ -336,6 +337,18 @@ deapodize (float2 *img, const float2 * __restrict__ apod, const int nimg, const 
             img[nchan*id+c] *= apod[id].x; // took magnitude prior
 }
 
+
+__global__ void
+sdc_ramlak (float2 *nudata, const int nchan, const int nro, const int nrest)
+{
+    for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nrest; id += blockDim.x * gridDim.x)
+        for (int r = 0; r < nro; ++r) {
+            float sdc = 2*(abs(r - nro/2) + 1) / float(nro + 1);
+            for (int c = 0; c < nchan; ++c)
+                nudata[nro*nchan*id + nchan*r + c] *= sdc;
+        }
+}
+
 __global__ void
 crop (float2* dst, const int ndst, const float2* __restrict__ src, const int nsrc, const int nchan)
 {
@@ -422,7 +435,7 @@ const int peskip)
             }
         }
         for (int ch = 0; sdc > 0.f && ch < nchan; ++ch)
-            udata[nchan*id + ch] = utmp[ch] / sdc;
+            udata[nchan*id + ch] = utmp[ch]; // / sdc;
     }
 }
 
@@ -538,20 +551,18 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata)
                 nz, t+1, nrep, t*dpe, (t+1)*dpe-1, data_offset);
 
             cuTry(cudaMemcpyAsync(d_nudata[j], h_nudata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
+            sdc_ramlak<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nchan, nro, npe_per_frame);
+
             gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j], ngrid, nchan, nro, npe_per_frame, kernwidth, peskip+peoffset);
             shifted_ifft(d_udata, j, ngrid, nchan);
             crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid, nchan);
 
-            if (nchan > 1) {
-#ifdef WALSH_COMB
+            if (nchan > 1 && use_walsh)
                 coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan, 1); // 0 works, 1 good, 3 optimal
-#else
+            else if (nchan > 1)
                 coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan);
-#endif
-            }
 
             deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nimg, 1);
-
 
             cuTry(cudaMemcpyAsync(h_img + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
         }
@@ -568,12 +579,14 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata)
 void
 print_usage()
 {
-    fprintf(stderr, "Usage: tron [-a] [-d dpe] [-o oversamp] [-s peskip] [-w kernwidth] <infile.ra> [outfile.ra]\n");
+    fprintf(stderr, "Usage: tron [-ahw] [-d dpe] [-k kernwidth] [-o oversamp] [-s peskip] <infile.ra> [outfile.ra]\n");
     fprintf(stderr, "\t-a\t\t\tuse adjoint transform\n");
     fprintf(stderr, "\t-d dpe\t\t\tnumber of phase encodes to skip between slices\n");
+    fprintf(stderr, "\t-h\t\t\tshow help\n");
+    fprintf(stderr, "\t-k kernwidth\t\twidth of gridding kernel\n");
     fprintf(stderr, "\t-o oversamp\t\tgrid oversampling factor\n");
     fprintf(stderr, "\t-s peskip\t\tnumber of phase encodes to skip at beginning\n");
-    fprintf(stderr, "\t-w kernwidth\t\twidth of gridding kernel\n");
+    fprintf(stderr, "\t-w\t\t\tuse Walsh adaptive coil combination\n");
 }
 
 
@@ -589,7 +602,7 @@ main (int argc, char *argv[])
     char infile[1024], outfile[1024];
 
     opterr = 0;
-    while ((c = getopt (argc, argv, "ad:ho:s:w:")) != -1)
+    while ((c = getopt (argc, argv, "ad:hk:o:s:w")) != -1)
     {
         switch (c) {
             case 'a':
@@ -605,11 +618,14 @@ main (int argc, char *argv[])
             case 's':
                 peskip = atoi(optarg);
                 break;
-            case 'w':
+            case 'k':
                 kernwidth = atof(optarg);
                 break;
             case 'h':
                 print_usage();
+                return 1;
+            case 'w':
+                use_walsh = 1;
                 break;
             default:
                 print_usage();
