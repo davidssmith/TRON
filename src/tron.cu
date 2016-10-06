@@ -697,10 +697,10 @@ main (int argc, char *argv[])
     ra_out.size = sizeof(float2)*nrep*nimg*nimg*nz;
     ra_out.ndims = 4;
     ra_out.dims = (uint64_t*)malloc(4*sizeof(uint64_t));
-    ra_out.dims[0] = nrep;
+    ra_out.dims[0] = 1;
     ra_out.dims[1] = nimg;
     ra_out.dims[2] = nimg;
-    ra_out.dims[3] = nz;
+    ra_out.dims[3] = nrep;
     ra_out.data = (uint8_t*)h_img;
     printf("write result to %s\n", outfile);
     ra_write(&ra_out, outfile);

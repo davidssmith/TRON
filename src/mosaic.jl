@@ -7,7 +7,7 @@ function mosaic{T,N}(img::Array{T,N})
   n2 = imsize[2]
   n3 = prod(imsize[3:end])
   img = reshape(img, n1, n2, n3)
-  n = int(round(sqrt(n3)))  # starting point: integer nearest to the square root
+  n = round(Int, round(sqrt(n3)))  # starting point: integer nearest to the square root
   # find largest integer less than or equal to sqrt that evenly divides the
   # number of images in the stack
   k = 0
@@ -17,9 +17,9 @@ function mosaic{T,N}(img::Array{T,N})
     end
   end
   # figure out the best dimensions
-  j = int(n3 / k)
-  ny = int(min(j, k))
-  nx = int(max(j, k))
+  j = round(Int, n3 / k)
+  ny = round(Int, min(j, k))
+  nx = round(Int, max(j, k))
   # stick them together
   M = zeros(eltype(img), ny*n1, nx*n2)
   for k in 1:ny, j in 1:nx
