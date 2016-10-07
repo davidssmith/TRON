@@ -58,6 +58,8 @@ int dpe = 21;
 int peskip = 0;
 int adjoint = 0;
 int use_walsh = 0;
+int use_postcomp = 0;
+int use_precomp = 1;
 
 // non-uniform data shape: nchan x nrep x nro x npe
 // uniform data shape:     nchan x nrep x ngrid x ngrid x nz
@@ -339,7 +341,7 @@ deapodize (float2 *img, const float2 * __restrict__ apod, const int nimg, const 
 
 
 __global__ void
-sdc_ramlak (float2 *nudata, const int nchan, const int nro, const int nrest)
+precompensate (float2 *nudata, const int nchan, const int nro, const int nrest)
 {
     for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nrest; id += blockDim.x * gridDim.x)
         for (int r = 0; r < nro; ++r) {
@@ -368,11 +370,11 @@ extern "C" {  // don't mangle name, so can call from other languages
 __global__ void
 gridradial2d (float2 *udata, const float2 * __restrict__ nudata, const int ngrid,
     const int nchan, const int nro, const int npe, const float kernwidth,
-const int peskip)
+const int peskip, const int use_postcomp)
 {
     // udata: [NCHAN x NGRID x NGRID], nudata: NCHAN x NRO x NPE
     float osfactor = float(ngrid) / float(nro); // oversampling factor
-    float2 utmp[NCHAN];
+    float2 utmp[MAXCHAN];
     const int blocksizex = 8; // TODO: optimize this blocking
     const int blocksizey = 4;
     const int warpsize = blocksizex*blocksizey;
@@ -426,7 +428,8 @@ const int peskip)
                     float kx = r* cf; // [-NGRID/2 ... NGRID/2-1]    // TODO: compute distance in radial coordinates?
                     float ky = r* sf; // [-NGRID/2 ... NGRID/2-1]
                     float wgt = gridkernel(kx - x, ky - y);
-                    sdc += wgt;
+                    if (use_postcomp)
+                      sdc += wgt;
                     for (int ch = 0; ch < nchan; ch += 2) {
                         utmp[ch] += wgt*nudata[nchan*(nro*pe + r + nro/2) + ch];
                         utmp[ch + 1] += wgt*nudata[nchan*(nro*pe + r + nro/2) + ch + 1];
@@ -434,8 +437,12 @@ const int peskip)
                 }
             }
         }
-        for (int ch = 0; sdc > 0.f && ch < nchan; ++ch)
-            udata[nchan*id + ch] = utmp[ch]; // / sdc;
+        if (use_postcomp && sdc > 0.f)
+            for (int ch = 0; ch < nchan; ++ch)
+                udata[nchan*id + ch] = utmp[ch] / sdc;
+        else
+            for (int ch = 0; ch < nchan; ++ch)
+                udata[nchan*id + ch] = utmp[ch];
     }
 }
 
@@ -551,9 +558,10 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata)
                 nz, t+1, nrep, t*dpe, (t+1)*dpe-1, data_offset);
 
             cuTry(cudaMemcpyAsync(d_nudata[j], h_nudata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
-            sdc_ramlak<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nchan, nro, npe_per_frame);
+            if (use_precomp)
+              precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nchan, nro, npe_per_frame);
 
-            gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j], ngrid, nchan, nro, npe_per_frame, kernwidth, peskip+peoffset);
+            gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j], ngrid, nchan, nro, npe_per_frame, kernwidth, peskip+peoffset, use_postcomp);
             shifted_ifft(d_udata, j, ngrid, nchan);
             crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid, nchan);
 
@@ -579,8 +587,9 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata)
 void
 print_usage()
 {
-    fprintf(stderr, "Usage: tron [-ahw] [-d dpe] [-k kernwidth] [-o oversamp] [-s peskip] <infile.ra> [outfile.ra]\n");
+    fprintf(stderr, "Usage: tron [-ahw] [-c sdc] [-d dpe] [-k kernwidth] [-o oversamp] [-s peskip] <infile.ra> [outfile.ra]\n");
     fprintf(stderr, "\t-a\t\t\tuse adjoint transform\n");
+    fprintf(stderr, "\t-c sdc\t\t\tdensity compensate (pre=1,post=2,both=3)\n");
     fprintf(stderr, "\t-d dpe\t\t\tnumber of phase encodes to skip between slices\n");
     fprintf(stderr, "\t-h\t\t\tshow help\n");
     fprintf(stderr, "\t-k kernwidth\t\twidth of gridding kernel\n");
@@ -596,18 +605,23 @@ main (int argc, char *argv[])
 {
     // for testing
     float2 *h_nudata, *h_img;
-
+    int sdc_flag;
     ra_t ra_in, ra_out;
     int c, index;
     char infile[1024], outfile[1024];
 
     opterr = 0;
-    while ((c = getopt (argc, argv, "ad:hk:o:s:w")) != -1)
+    while ((c = getopt (argc, argv, "ac:d:hk:o:s:w")) != -1)
     {
         switch (c) {
             case 'a':
                 printf("Using adjoint transformation.\n");
                 adjoint = 1;  // perform adjoint operation
+                break;
+            case 'c':
+                sdc_flag = atoi(optarg);
+                use_precomp = sdc_flag & 1;
+                use_postcomp = sdc_flag & 2;
                 break;
             case 'd':
                 dpe = atoi(optarg);
@@ -646,8 +660,11 @@ main (int argc, char *argv[])
     }
     printf("Skipping first %d PEs.\n", peskip);
     printf("PE spacing set to %d.\n", dpe);
-    printf("Kernel width set to %f.\n", kernwidth);
-    printf("Oversampling factor set to %f.\n", oversamp);
+    printf("Kernel width set to %.1f.\n", kernwidth);
+    printf("Oversampling factor set to %.3f.\n", oversamp);
+    printf("Walsh combine? %d\n", use_walsh);
+    printf("Precompensate? %d\n", use_precomp);
+    printf("Postcompensate? %d\n", use_postcomp);
     printf("Infile: %s\n", infile);
     printf("Outfile: %s\n", outfile);
 
