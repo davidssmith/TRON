@@ -50,7 +50,7 @@ const int gridsize = 2048;
 // GLOBAL VARIABLES
 float2 *d_nudata[NSTREAMS], *d_udata[NSTREAMS], *d_coilimg[NSTREAMS],
     *d_img[NSTREAMS], *d_b1[NSTREAMS], *d_apodos[NSTREAMS], *d_apod[NSTREAMS];
-cufftHandle inverse_plan[NSTREAMS];
+cufftHandle fft_plan[NSTREAMS];
 cudaStream_t stream[NSTREAMS];
 int ndevices;
 int npe_per_frame;
@@ -148,7 +148,7 @@ fftshift (float2 *dst, const int n, const int nchan)
 
 
 __host__ void
-ifft_init(const int j, const int ngrid, const int nchan)
+fft_init(const int j, const int ngrid, const int nchan)
 {
   // setup FFT
   const int rank = 2;
@@ -156,17 +156,17 @@ ifft_init(const int j, const int ngrid, const int nchan)
   int n[2] = {ngrid, ngrid};
   int inembed[]  = {ngrid, ngrid};
   int onembed[]  = {ngrid, ngrid};
-  cufftSafeCall(cufftPlanMany(&inverse_plan[j], rank, n, onembed, ostride, odist,
+  cufftSafeCall(cufftPlanMany(&fft_plan[j], rank, n, onembed, ostride, odist,
       inembed, istride, idist, CUFFT_C2C, nchan));
-  cufftSafeCall(cufftSetStream(inverse_plan[j], stream[j]));
+  cufftSafeCall(cufftSetStream(fft_plan[j], stream[j]));
 }
 
 
 __host__ void
-shifted_ifft (float2 *udata[], const int j, const int ngrid, const int nchan)
+fftwithshift (float2 *udata[], const int j, const int ngrid, const int nchan)
 {
     fftshift<<<gridsize,blocksize,0,stream[j]>>>(udata[j], ngrid, nchan);
-    cufftSafeCall(cufftExecC2C(inverse_plan[j], udata[j], udata[j], CUFFT_INVERSE));
+    cufftSafeCall(cufftExecC2C(fft_plan[j], udata[j], udata[j], CUFFT_INVERSE));
     fftshift<<<gridsize,blocksize,0,stream[j]>>>(udata[j], ngrid, nchan);
 }
 
@@ -311,9 +311,9 @@ fillapod (float2 *d_apod, const int n, const float kernwidth)
             h_apod[n*x + y].x = gridkernel(n-x, n-y);
     }
     cuTry(cudaMemcpy(d_apod, h_apod, d_imgsize, cudaMemcpyHostToDevice));
-    cufftHandle inverse_plan_apod;
-    cufftSafeCall(cufftPlan2d(&inverse_plan_apod, n, n, CUFFT_C2C));
-    cufftSafeCall(cufftExecC2C(inverse_plan_apod, d_apod, d_apod, CUFFT_INVERSE));
+    cufftHandle fft_plan_apod;
+    cufftSafeCall(cufftPlan2d(&fft_plan_apod, n, n, CUFFT_C2C));
+    cufftSafeCall(cufftExecC2C(fft_plan_apod, d_apod, d_apod, CUFFT_INVERSE));
     fftshift<<<n,n>>>(d_apod, n, 1);
     cuTry(cudaMemcpy(h_apod, d_apod, d_imgsize, cudaMemcpyDeviceToHost));
 
@@ -505,7 +505,7 @@ tron_init()
   {
       if (MULTI_GPU) cudaSetDevice(j % ndevices);
       cuTry(cudaStreamCreate(&stream[j]));
-      ifft_init(j, ngrid, nchan);
+      fft_init(j, ngrid, nchan);
       cuTry(cudaMalloc((void **)&d_nudata[j], d_nudatasize));
       cuTry(cudaMalloc((void **)&d_udata[j], d_udatasize));
       // cuTry(cudaMemset(d_udata[j], 0, p->d_udatasize));
@@ -540,7 +540,6 @@ tron_shutdown()
 __host__ void
 recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata)
 {
-
     tron_init();
 
     printf("iterating over %d slices\n", nz);
@@ -562,7 +561,7 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata)
               precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nchan, nro, npe_per_frame);
 
             gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j], ngrid, nchan, nro, npe_per_frame, kernwidth, peskip+peoffset, use_postcomp);
-            shifted_ifft(d_udata, j, ngrid, nchan);
+            fftwithshift(d_udata, j, ngrid, nchan);
             crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid, nchan);
 
             if (nchan > 1 && use_walsh)
