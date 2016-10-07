@@ -56,10 +56,12 @@ int ndevices;
 int npe_per_frame;
 int dpe = 21;
 int peskip = 0;
-int adjoint = 0;
-int use_walsh = 0;
-int use_postcomp = 0;
-int use_precomp = 1;
+int flag_adjoint = 0;
+int flag_fft = 1;
+int flag_walsh = 0;
+int flag_postcomp = 0;
+int flag_precomp = 1;
+int flag_deapodize = 1;
 
 // non-uniform data shape: nchan x nrep x nro x npe
 // uniform data shape:     nchan x nrep x ngrid x ngrid x nz
@@ -370,7 +372,7 @@ extern "C" {  // don't mangle name, so can call from other languages
 __global__ void
 gridradial2d (float2 *udata, const float2 * __restrict__ nudata, const int ngrid,
     const int nchan, const int nro, const int npe, const float kernwidth,
-const int peskip, const int use_postcomp)
+const int peskip, const int flag_postcomp)
 {
     // udata: [NCHAN x NGRID x NGRID], nudata: NCHAN x NRO x NPE
     float osfactor = float(ngrid) / float(nro); // oversampling factor
@@ -428,7 +430,7 @@ const int peskip, const int use_postcomp)
                     float kx = r* cf; // [-NGRID/2 ... NGRID/2-1]    // TODO: compute distance in radial coordinates?
                     float ky = r* sf; // [-NGRID/2 ... NGRID/2-1]
                     float wgt = gridkernel(kx - x, ky - y);
-                    if (use_postcomp)
+                    if (flag_postcomp)
                       sdc += wgt;
                     for (int ch = 0; ch < nchan; ch += 2) {
                         utmp[ch] += wgt*nudata[nchan*(nro*pe + r + nro/2) + ch];
@@ -437,7 +439,7 @@ const int peskip, const int use_postcomp)
                 }
             }
         }
-        if (use_postcomp && sdc > 0.f)
+        if (flag_postcomp && sdc > 0.f)
             for (int ch = 0; ch < nchan; ++ch)
                 udata[nchan*id + ch] = utmp[ch] / sdc;
         else
@@ -557,19 +559,28 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata)
                 nz, t+1, nrep, t*dpe, (t+1)*dpe-1, data_offset);
 
             cuTry(cudaMemcpyAsync(d_nudata[j], h_nudata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
-            if (use_precomp)
+            if (flag_precomp)
               precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nchan, nro, npe_per_frame);
 
-            gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j], ngrid, nchan, nro, npe_per_frame, kernwidth, peskip+peoffset, use_postcomp);
-            fftwithshift(d_udata, j, ngrid, nchan);
+            if (flag_adjoint)
+                gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j], 
+                    ngrid, nchan, nro, npe_per_frame, kernwidth, peskip+peoffset, flag_postcomp);
+            else
+                degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_udata[j], 
+                    ngrid, nchan, nro, npe, kernwidth, peskip);
+
+            if (flag_fft)
+                fftwithshift(d_udata, j, ngrid, nchan);
+                
             crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid, nchan);
 
-            if (nchan > 1 && use_walsh)
+            if (nchan > 1 && flag_walsh)
                 coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan, 1); // 0 works, 1 good, 3 optimal
             else if (nchan > 1)
                 coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan);
 
-            deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nimg, 1);
+            if (flag_deapodize)
+                deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nimg, 1);
 
             cuTry(cudaMemcpyAsync(h_img + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
         }
@@ -586,10 +597,12 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata)
 void
 print_usage()
 {
-    fprintf(stderr, "Usage: tron [-ahw] [-c sdc] [-d dpe] [-k kernwidth] [-o oversamp] [-s peskip] <infile.ra> [outfile.ra]\n");
+    fprintf(stderr, "Usage: tron [-aAFhw] [-c sdc] [-d dpe] [-k kernwidth] [-o oversamp] [-s peskip] <infile.ra> [outfile.ra]\n");
     fprintf(stderr, "\t-a\t\t\tuse adjoint transform\n");
-    fprintf(stderr, "\t-c sdc\t\t\tdensity compensate (pre=1,post=2,both=3)\n");
+    fprintf(stderr, "\t-A\t\t\tturn off deapodization\n");
+    fprintf(stderr, "\t-c sdc\t\t\tdensity compensate (none=0,pre=1,post=2,both=3)\n");
     fprintf(stderr, "\t-d dpe\t\t\tnumber of phase encodes to skip between slices\n");
+    fprintf(stderr, "\t-F dpe\t\t\tturn off FFT\n");
     fprintf(stderr, "\t-h\t\t\tshow help\n");
     fprintf(stderr, "\t-k kernwidth\t\twidth of gridding kernel\n");
     fprintf(stderr, "\t-o oversamp\t\tgrid oversampling factor\n");
@@ -610,20 +623,26 @@ main (int argc, char *argv[])
     char infile[1024], outfile[1024];
 
     opterr = 0;
-    while ((c = getopt (argc, argv, "ac:d:hk:o:s:w")) != -1)
+    while ((c = getopt (argc, argv, "Aac:d:Fhk:o:s:w")) != -1)
     {
         switch (c) {
+            case 'A':
+                flag_deapodize = 0;
+                break;
             case 'a':
                 printf("Using adjoint transformation.\n");
-                adjoint = 1;  // perform adjoint operation
+                flag_adjoint = 1;  // perform adjoint operation
                 break;
             case 'c':
                 sdc_flag = atoi(optarg);
-                use_precomp = sdc_flag & 1;
-                use_postcomp = sdc_flag & 2;
+                flag_precomp = sdc_flag & 1;
+                flag_postcomp = sdc_flag & 2;
                 break;
             case 'd':
                 dpe = atoi(optarg);
+                break;
+            case 'F':
+                flag_fft = 0;
                 break;
             case 'o':
                 oversamp = atof(optarg);
@@ -638,7 +657,7 @@ main (int argc, char *argv[])
                 print_usage();
                 return 1;
             case 'w':
-                use_walsh = 1;
+                flag_walsh = 1;
                 break;
             default:
                 print_usage();
@@ -661,9 +680,9 @@ main (int argc, char *argv[])
     printf("PE spacing set to %d.\n", dpe);
     printf("Kernel width set to %.1f.\n", kernwidth);
     printf("Oversampling factor set to %.3f.\n", oversamp);
-    printf("Walsh combine? %d\n", use_walsh);
-    printf("Precompensate? %d\n", use_precomp);
-    printf("Postcompensate? %d\n", use_postcomp);
+    printf("Walsh combine? %d\n", flag_walsh);
+    printf("Precompensate? %d\n", flag_precomp);
+    printf("Postcompensate? %d\n", flag_postcomp);
     printf("Infile: %s\n", infile);
     printf("Outfile: %s\n", outfile);
 
