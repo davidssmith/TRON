@@ -295,8 +295,8 @@ minangulardist(const float a, const float b)
 {
     float d1 = fabsf(modang(a - b));
     float d2 = fabsf(modang(a + M_PI) - b);
-    float d3 = modang(2.f*M_PI - fabs(a + M_PI - b));
-    float d4 = modang(2.f*M_PI - fabs(a - b));
+    float d3 = 2.f*M_PI - d1;
+    float d4 = 2.f*M_PI - d2;
     return fminf(fminf(d1,d2),fminf(d3,d4));
 }
 
@@ -416,32 +416,29 @@ const int peskip, const int flag_postcomp)
 
         float sdc = 0.f;
         // get uniform point coordinate in non-uniform system, (r,theta) in this case
-        float gridpoint_theta = modang(atan2f(float(y),float(x))); 
+        float gridpoint_theta = modang(atan2f(float(y),float(x)));
         float dtheta = atan2f(kernwidth, gridpoint_radius); // narrow that band to an arc
         // profiles must line within an arc of 2*dtheta to be counted
 
-        // TODO: replace this logic with boolean function that can be swapped out 
+        // TODO: replace this logic with boolean function that can be swapped out
         // for diff acquisitions
         for (int pe = 0; pe < npe; ++pe)
         {
             float profile_theta = modang(PHI * float(pe + peskip));
-            // float dtheta1 = fabsf(theta - gridpoint_theta);
-            // float dtheta2 = fabsf(modang(theta + M_PI) - gridpoint_theta);
-            // if (dtheta1 < dtheta || dtheta2 < dtheta)
-            // float dtheta1 = fabsf(modang(profile_theta - gridpoint_theta));
-            // float dtheta2 = fabsf(modang(profile_theta + M_PI) - gridpoint_theta);
-            // float dtheta3 = modang(2.f*M_PI - fabs(profile_theta + M_PI - gridpoint_theta));
-            // float dtheta4 = modang(2.f*M_PI - fabs(profile_theta - gridpoint_theta));
-            float dtheta1 = minangulardist(profile_theta, gridpoint_theta);
-            if (dtheta1 <= dtheta)
+            float dtheta1 = fabsf(modang(profile_theta - gridpoint_theta));
+            float dtheta2 = fabsf(modang(profile_theta + M_PI) - gridpoint_theta);
+            float dtheta3 = 2.f*M_PI - dtheta1;
+            float dtheta4 = 2.f*M_PI - dtheta2;
+            //float dtheta1 = minangulardist(profile_theta, gridpoint_theta);
+            if (dtheta1 <= dtheta || dtheta2 <= dtheta || dtheta3 <= dtheta || dtheta4 <= dtheta)
             {
                 float sf, cf;
                 __sincosf(profile_theta, &sf, &cf);
                 sf *= oversamp;
                 cf *= oversamp;
                 // TODO: fix this logic, try using without dtheta1
-                int rstart = dtheta1 < dtheta ? rmin : -rmax;
-                int rend   = dtheta1 < dtheta ? rmax : -rmin;
+                int rstart = dtheta1 <= dtheta || dtheta3 <= dtheta ? rmin : -rmax;
+                int rend   = dtheta1 <= dtheta || dtheta3 <= dtheta ? rmax : -rmin;
                 for (int r = rstart; r <= rend; ++r)  // for each POSITIVE non-uniform ro point
                 {
                     float kx = r*cf; // [-NGRID/2 ... NGRID/2-1]    // TODO: compute distance in radial coordinates?
@@ -581,15 +578,15 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata)
               precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nchan, nro, npe_per_frame);
 
             if (flag_adjoint)
-                gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j], 
+                gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j],
                     ngrid, nchan, nro, npe_per_frame, kernwidth, oversamp, peskip+peoffset, flag_postcomp);
             else
-                degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_udata[j], 
+                degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_udata[j],
                     ngrid, nchan, nro, npe, kernwidth, oversamp, peskip);
 
             if (flag_fft)
                 fftwithshift(d_udata, j, ngrid, nchan);
-                
+
             crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid, nchan);
 
             if (nchan > 1 && flag_walsh)
