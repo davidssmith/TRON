@@ -268,14 +268,13 @@ i0f (const float x)
 }
 
 __host__ __device__ inline float
-gridkernel (const float dx, const float dy)
+gridkernel (const float dx, const float dy, const float kernwidth, const float oversamp)
 {
     float r2 = dx*dx + dy*dy;
 #ifdef KERN_KB
-    const float kernwidth = 2.f;
-    const float osfactor = 2.f;
+    //const float kernwidth = 2.f;
 #define SQR(x) ((x)*(x))
-#define BETA (M_PI*sqrtf(SQR(kernwidth/osfactor*(osfactor-0.5))-0.8))
+#define BETA (M_PI*sqrtf(SQR(kernwidth/oversamp*(oversamp-0.5))-0.8))
     return r2 < kernwidth*kernwidth ? i0f(BETA * sqrtf (1.f - r2/kernwidth/kernwidth)) / i0f(BETA): 0.f;
 #else
     const float sigma = 0.33f; // ballparked from Jackson et al. 1991. IEEE TMI, 10(3), 473–8
@@ -291,8 +290,18 @@ modang (const float x)   /* rescale arbitrary angles to [0,2PI] interval */
     return y < 0.f ? y + TWOPI : y;
 }
 
+__device__ inline float
+minangulardist(const float a, const float b)
+{
+    float d1 = fabsf(modang(a - b));
+    float d2 = fabsf(modang(a + M_PI) - b);
+    float d3 = modang(2.f*M_PI - fabs(a + M_PI - b));
+    float d4 = modang(2.f*M_PI - fabs(a - b));
+    return fminf(fminf(d1,d2),fminf(d3,d4));
+}
+
 __host__ void
-fillapod (float2 *d_apod, const int n, const float kernwidth)
+fillapod (float2 *d_apod, const int n)
 {
     const size_t d_imgsize = n*n*sizeof(float2);
     float2 *h_apod = (float2*)malloc(d_imgsize);
@@ -302,15 +311,15 @@ fillapod (float2 *d_apod, const int n, const float kernwidth)
         h_apod[k] = make_float2(0.f,0.f);
     for (int x = 0; x < w; ++x) {
         for (int y = 0; y < w; ++y)
-            h_apod[n*x + y].x = gridkernel(x, y);
+            h_apod[n*x + y].x = gridkernel(x, y, kernwidth, oversamp);
         for (int y = n-w; y < n; ++y)
-            h_apod[n*x + y].x = gridkernel(x, n-y);
+            h_apod[n*x + y].x = gridkernel(x, n-y, kernwidth, oversamp);
     }
     for (int x = n-w; x < n; ++x) {
         for (int y = 0; y < w; ++y)
-            h_apod[n*x + y].x = gridkernel(n-x, y);
+            h_apod[n*x + y].x = gridkernel(n-x, y, kernwidth, oversamp);
         for (int y = n-w; y < n; ++y)
-            h_apod[n*x + y].x = gridkernel(n-x, n-y);
+            h_apod[n*x + y].x = gridkernel(n-x, n-y, kernwidth, oversamp);
     }
     cuTry(cudaMemcpy(d_apod, h_apod, d_imgsize, cudaMemcpyHostToDevice));
     cufftHandle fft_plan_apod;
@@ -371,11 +380,11 @@ extern "C" {  // don't mangle name, so can call from other languages
 
 __global__ void
 gridradial2d (float2 *udata, const float2 * __restrict__ nudata, const int ngrid,
-    const int nchan, const int nro, const int npe, const float kernwidth,
+    const int nchan, const int nro, const int npe, const float kernwidth, const float oversamp,
 const int peskip, const int flag_postcomp)
 {
     // udata: [NCHAN x NGRID x NGRID], nudata: NCHAN x NRO x NPE
-    float osfactor = float(ngrid) / float(nro); // oversampling factor
+    //float oversamp = float(ngrid) / float(nro); // oversampling factor
     float2 utmp[MAXCHAN];
     const int blocksizex = 8; // TODO: optimize this blocking
     const int blocksizey = 4;
@@ -397,42 +406,50 @@ const int peskip, const int flag_postcomp)
         int y = zid % blocksizey + blocksizey*by;
         int id = x*ngrid + y; // computed linear array index for uniform data
         x -= ngrid/2;
-        y = -y +  ngrid/2;
-        float myradius = hypotf(x, y);
-        int rmax = fminf(floorf(myradius + kernwidth)/osfactor, nro/2-1);
-        int rmin = fmaxf(ceilf(myradius - kernwidth)/osfactor, 0);  // define a circular band around the uniform point
+        y = -y + ngrid/2;
+        float gridpoint_radius = hypotf(float(x), float(y));
+        int rmax = fminf(floorf(gridpoint_radius + kernwidth)/oversamp, nro/2-1);
+        int rmin = fmaxf(ceilf(gridpoint_radius - kernwidth)/oversamp, 0);  // define a circular band around the uniform point
         for (int ch = 0; ch < nchan; ++ch)
              udata[nchan*id + ch] = make_float2(0.f,0.f);
         if (rmin > nro/2-1) continue; // outside non-uniform data area
 
         float sdc = 0.f;
+        // get uniform point coordinate in non-uniform system, (r,theta) in this case
+        float gridpoint_theta = modang(atan2f(float(y),float(x))); 
+        float dtheta = atan2f(kernwidth, gridpoint_radius); // narrow that band to an arc
+        // profiles must line within an arc of 2*dtheta to be counted
 
-        float mytheta = modang(atan2f(float(y),float(x))); // get uniform point coordinate in non-uniform system, (r,theta) in this case
-        float dtheta = atan2f(kernwidth, myradius); // narrow that band to an arc
-
-        // TODO: replace this logic with boolean function that can be
-        // swapped out for diff acquisitions
+        // TODO: replace this logic with boolean function that can be swapped out 
+        // for diff acquisitions
         for (int pe = 0; pe < npe; ++pe)
         {
-            float theta = modang(PHI * float(pe + peskip));
-            float dtheta1 = fabsf(theta - mytheta);
-            float dtheta2 = fabsf(modang(theta + M_PI) - mytheta);
-            if (dtheta1 < dtheta || dtheta2 < dtheta)
+            float profile_theta = modang(PHI * float(pe + peskip));
+            // float dtheta1 = fabsf(theta - gridpoint_theta);
+            // float dtheta2 = fabsf(modang(theta + M_PI) - gridpoint_theta);
+            // if (dtheta1 < dtheta || dtheta2 < dtheta)
+            // float dtheta1 = fabsf(modang(profile_theta - gridpoint_theta));
+            // float dtheta2 = fabsf(modang(profile_theta + M_PI) - gridpoint_theta);
+            // float dtheta3 = modang(2.f*M_PI - fabs(profile_theta + M_PI - gridpoint_theta));
+            // float dtheta4 = modang(2.f*M_PI - fabs(profile_theta - gridpoint_theta));
+            float dtheta1 = minangulardist(profile_theta, gridpoint_theta);
+            if (dtheta1 <= dtheta)
             {
                 float sf, cf;
-                __sincosf(theta, &sf, &cf);
-                sf *= osfactor;
-                cf *= osfactor;
+                __sincosf(profile_theta, &sf, &cf);
+                sf *= oversamp;
+                cf *= oversamp;
+                // TODO: fix this logic, try using without dtheta1
                 int rstart = dtheta1 < dtheta ? rmin : -rmax;
                 int rend   = dtheta1 < dtheta ? rmax : -rmin;
                 for (int r = rstart; r <= rend; ++r)  // for each POSITIVE non-uniform ro point
                 {
-                    float kx = r* cf; // [-NGRID/2 ... NGRID/2-1]    // TODO: compute distance in radial coordinates?
-                    float ky = r* sf; // [-NGRID/2 ... NGRID/2-1]
-                    float wgt = gridkernel(kx - x, ky - y);
+                    float kx = r*cf; // [-NGRID/2 ... NGRID/2-1]    // TODO: compute distance in radial coordinates?
+                    float ky = r*sf; // [-NGRID/2 ... NGRID/2-1]
+                    float wgt = gridkernel(kx - x, ky - y, kernwidth, oversamp);
                     if (flag_postcomp)
                       sdc += wgt;
-                    for (int ch = 0; ch < nchan; ch += 2) {
+                    for (int ch = 0; ch < nchan; ch += 2) { // unrolled by 2 'cuz faster
                         utmp[ch] += wgt*nudata[nchan*(nro*pe + r + nro/2) + ch];
                         utmp[ch + 1] += wgt*nudata[nchan*(nro*pe + r + nro/2) + ch + 1];
                     }
@@ -452,10 +469,11 @@ const int peskip, const int flag_postcomp)
 __global__ void
 degridradial2d (
     float2 *nudata, const float2 * __restrict__ udata, const int ngrid,
-    const int nchan, const int nro, const int npe, const float kernwidth, const int peskip)
+    const int nchan, const int nro, const int npe, const float kernwidth,
+    const float oversamp, const int peskip)
 {
     // udata: [NCHAN x NGRID x NGRID], nudata: NCHAN x NRO x NPE
-    float osfactor = float(ngrid) / float(nro); // oversampling factor
+    //float oversamp = float(ngrid) / float(nro); // oversampling factor
 
     for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nro*npe; id += blockDim.x * gridDim.x)
     {
@@ -465,15 +483,15 @@ degridradial2d (
         float t = modang(PHI*(pe + peskip)); // golden angle specific!
         float kx = r*cos(t); // Cartesian freqs of non-Cart datum  // TODO: _sincosf?
         float ky = r*sin(t);
-        float x = osfactor*( kx + 0.5f * nro);  // (x,y) coordinates in grid units
-        float y = osfactor*(-ky + 0.5f * nro);
+        float x = oversamp*( kx + 0.5f * nro);  // (x,y) coordinates in grid units
+        float y = oversamp*(-ky + 0.5f * nro);
 
         for (int ch = 0; ch < nchan; ++ch) // zero my elements
              nudata[nchan*id + ch] = make_float2(0.f,0.f);
         for (int ux = fmaxf(0.f,x-kernwidth); ux <= fminf(ngrid-1,x+kernwidth); ++ux)
         for (int uy = fmaxf(0.f,y-kernwidth); uy <= fminf(ngrid-1,y+kernwidth); ++uy)
         {
-            float wgt = gridkernel(ux - x, uy - y);
+            float wgt = gridkernel(ux - x, uy - y, kernwidth, oversamp);
             for (int ch = 0; ch < nchan; ++ch) {
                 float2 c = udata[nchan*(ux*ngrid + uy) + ch];
                 nudata[nchan*id + ch].x += wgt*c.x;
@@ -516,7 +534,7 @@ tron_init()
       cuTry(cudaMalloc((void **)&d_img[j], d_imgsize));
       cuTry(cudaMalloc((void **)&d_apodos[j], d_gridsize));
       cuTry(cudaMalloc((void **)&d_apod[j], d_imgsize));
-      fillapod(d_apodos[j], ngrid, kernwidth);
+      fillapod(d_apodos[j], ngrid);
       crop<<<nimg,nimg>>>(d_apod[j], nimg, d_apodos[j], ngrid, 1);
       cuTry(cudaFree(d_apodos[j]));
   }
@@ -564,10 +582,10 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata)
 
             if (flag_adjoint)
                 gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j], 
-                    ngrid, nchan, nro, npe_per_frame, kernwidth, peskip+peoffset, flag_postcomp);
+                    ngrid, nchan, nro, npe_per_frame, kernwidth, oversamp, peskip+peoffset, flag_postcomp);
             else
                 degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_udata[j], 
-                    ngrid, nchan, nro, npe, kernwidth, peskip);
+                    ngrid, nchan, nro, npe, kernwidth, oversamp, peskip);
 
             if (flag_fft)
                 fftwithshift(d_udata, j, ngrid, nchan);
