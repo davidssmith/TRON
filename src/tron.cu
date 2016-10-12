@@ -425,20 +425,25 @@ const int peskip, const int flag_postcomp)
         for (int pe = 0; pe < npe; ++pe)
         {
             float profile_theta = modang(PHI * float(pe + peskip));
-            float dtheta1 = fabsf(modang(profile_theta - gridpoint_theta));
-            float dtheta2 = fabsf(modang(profile_theta + M_PI) - gridpoint_theta);
-            float dtheta3 = 2.f*M_PI - dtheta1;
-            float dtheta4 = 2.f*M_PI - dtheta2;
-            //float dtheta1 = minangulardist(profile_theta, gridpoint_theta);
-            if (dtheta1 <= dtheta || dtheta2 <= dtheta || dtheta3 <= dtheta || dtheta4 <= dtheta)
+            //float dtheta1 = fabsf(modang(profile_theta - gridpoint_theta));
+            //float dtheta2 = fabsf(modang(profile_theta + M_PI) - gridpoint_theta);
+            //float dtheta1 = fabsf(profile_theta - gridpoint_theta);
+            //float dtheta2 = fabsf(profile_theta + M_PI - gridpoint_theta);
+            //float dtheta3 = 2.f*M_PI - dtheta1;
+            //float dtheta4 = 2.f*M_PI - dtheta2;
+            float dtheta1 = minangulardist(profile_theta, gridpoint_theta);
+            if (dtheta1 <= dtheta) // || dtheta2 <= dtheta || dtheta3 <= dtheta || dtheta4 <= dtheta)
             {
                 float sf, cf;
                 __sincosf(profile_theta, &sf, &cf);
                 sf *= oversamp;
                 cf *= oversamp;
                 // TODO: fix this logic, try using without dtheta1
-                int rstart = dtheta1 <= dtheta || dtheta3 <= dtheta ? rmin : -rmax;
-                int rend   = dtheta1 <= dtheta || dtheta3 <= dtheta ? rmax : -rmin;
+                //int rstart = dtheta1 <= dtheta || dtheta3 <= dtheta ? rmin : -rmax;
+                //int rend   = dtheta1 <= dtheta || dtheta3 <= dtheta ? rmax : -rmin;
+                int rstart = fabs(profile_theta-gridpoint_theta) < 0.5f*M_PI ? rmin : -rmax;
+                int rend   = fabs(profile_theta-gridpoint_theta) < 0.5f*M_PI ? rmax : -rmin;
+                for (int r = rstart; r <= rend; ++r)  // for each POSITIVE non-uniform ro point
                 for (int r = rstart; r <= rend; ++r)  // for each POSITIVE non-uniform ro point
                 {
                     float kx = r*cf; // [-NGRID/2 ... NGRID/2-1]    // TODO: compute distance in radial coordinates?

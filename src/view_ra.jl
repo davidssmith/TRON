@@ -12,4 +12,4 @@ r=abs(r[1,:,:,n])
 println(size(r))
 
 #imshow(abs(mosaic(squeeze(r,4))),interpolation="nearest",cmap="gray")
-imshow(sqrt(r),interpolation="nearest",cmap="gray")
+imshow((r),interpolation="nearest",cmap="gray")
