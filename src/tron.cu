@@ -663,9 +663,10 @@ main (int argc, char *argv[])
     ra_t ra_in, ra_out;
     int c, index;
     char infile[1024], outfile[1024];
+    strncpy(recon_commands, default_recon, MAX_RECON_CMDS);
 
     opterr = 0;
-    while ((c = getopt (argc, argv, "d:hk:o:s:")) != -1)
+    while ((c = getopt (argc, argv, "d:hk:o:r:s:")) != -1)
     {
         switch (c) {
             case 'd':
@@ -683,6 +684,9 @@ main (int argc, char *argv[])
             case 'h':
                 print_usage();
                 return 1;
+            case 'r':
+                strncpy(recon_commands, optarg, MAX_RECON_CMDS);
+                break;
             default:
                 print_usage();
                 return 1;
@@ -706,6 +710,7 @@ main (int argc, char *argv[])
     printf("Oversampling factor set to %.3f.\n", oversamp);
     printf("Infile: %s\n", infile);
     printf("Outfile: %s\n", outfile);
+    printf("Command: %s\n", recon_commands);
 
     printf("reading %s\n", infile);
     ra_read(&ra_in, infile);
@@ -740,8 +745,7 @@ main (int argc, char *argv[])
     clock_t start = clock();
 
     // the magic happens
-    printf("recon command: %s\n", default_recon);
-    recon_gar2d(h_img, h_nudata, default_recon);
+    recon_gar2d(h_img, h_nudata, recon_commands);
 
 
     clock_t end = clock();
