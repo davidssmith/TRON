@@ -40,10 +40,11 @@
 
 
 // CONFIGURATION PARAMETERS
-#define NSTREAMS   2
-#define NCHAN      8
-#define MAXCHAN    8
-#define MULTI_GPU  1
+#define NSTREAMS        2
+#define MULTI_GPU       1
+#define NCHAN           8
+#define MAXCHAN         8
+#define MAX_RECON_CMDS  20
 const int blocksize = 96;    // CUDA kernel parameters, TWEAK HERE to optimize
 const int gridsize = 2048;
 
@@ -56,12 +57,10 @@ int ndevices;
 int npe_per_frame;
 int dpe = 21;
 int peskip = 0;
-int flag_adjoint = 0;
-int flag_fft = 1;
-int flag_walsh = 0;
 int flag_postcomp = 0;
-int flag_precomp = 1;
 int flag_deapodize = 1;
+const char default_recon[] = "Dgfcsa\0";
+char recon_commands[MAX_RECON_CMDS];
 
 // non-uniform data shape: nchan x nrep x nro x npe
 // uniform data shape:     nchan x nrep x ngrid x ngrid x nz
@@ -560,7 +559,7 @@ tron_shutdown()
 
 
 __host__ void
-recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata)
+recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata, const char command_string[])
 {
     tron_init();
 
@@ -579,28 +578,46 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata)
                 nz, t+1, nrep, t*dpe, (t+1)*dpe-1, data_offset);
 
             cuTry(cudaMemcpyAsync(d_nudata[j], h_nudata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
-            if (flag_precomp)
-              precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nchan, nro, npe_per_frame);
 
-            if (flag_adjoint)
-                gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j],
-                    ngrid, nchan, nro, npe_per_frame, kernwidth, oversamp, peskip+peoffset, flag_postcomp);
-            else
-                degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_udata[j],
-                    ngrid, nchan, nro, npe, kernwidth, oversamp, peskip);
-
-            if (flag_fft)
-                fftwithshift(d_udata, j, ngrid, nchan);
-
-            crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid, nchan);
-
-            if (nchan > 1 && flag_walsh)
-                coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan, 1); // 0 works, 1 good, 3 optimal
-            else if (nchan > 1)
-                coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan);
-
-            if (flag_deapodize)
-                deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nimg, 1);
+            for (int k = 0; k < strlen(command_string); ++k)
+            {
+                switch (command_string[k]) {
+                case 'a':
+                    deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nimg, 1);
+                    break;
+                case 'D':
+                    precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nchan, nro, npe_per_frame);
+                    break;
+                case 'g':
+                    gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j],
+                        ngrid, nchan, nro, npe_per_frame, kernwidth, oversamp, peskip+peoffset, flag_postcomp);
+                    break;
+                case 'G':
+                    degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_udata[j],
+                        ngrid, nchan, nro, npe, kernwidth, oversamp, peskip);
+                    break;
+                case 'F':
+                    fftwithshift(d_udata, j, ngrid, nchan);
+                    break;
+                    // TODO:: fix scaling
+                case 'f':
+                    fftwithshift(d_udata, j, ngrid, nchan);
+                    break;
+                case 'c':
+                    crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid, nchan);
+                    break;
+                case 'w':
+                    if (nchan > 1)
+                        coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan, 1); // 0 works, 1 good, 3 optimal
+                    break;
+                case 's':
+                    coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan);
+                    break;
+                default:
+                    fprintf(stderr, "unknown command character %c\n", command_string[k]);
+                    return;
+                }
+            }
 
             cuTry(cudaMemcpyAsync(h_img + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
         }
@@ -617,19 +634,25 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata)
 void
 print_usage()
 {
-    fprintf(stderr, "Usage: tron [-aAFhw] [-c sdc] [-d dpe] [-k kernwidth] [-o oversamp] [-s peskip] <infile.ra> [outfile.ra]\n");
-    fprintf(stderr, "\t-a\t\t\tuse adjoint transform\n");
-    fprintf(stderr, "\t-A\t\t\tturn off deapodization\n");
-    fprintf(stderr, "\t-c sdc\t\t\tdensity compensate (none=0,pre=1,post=2,both=3)\n");
+    fprintf(stderr, "Usage: tron [-h] [-r cmds] [-d dpe] [-k width] [-o oversamp] [-s peskip] <infile.ra> [outfile.ra]\n");
     fprintf(stderr, "\t-d dpe\t\t\tnumber of phase encodes to skip between slices\n");
-    fprintf(stderr, "\t-F dpe\t\t\tturn off FFT\n");
-    fprintf(stderr, "\t-h\t\t\tshow help\n");
-    fprintf(stderr, "\t-k kernwidth\t\twidth of gridding kernel\n");
+    fprintf(stderr, "\t-h\t\t\tshow this help\n");
+    fprintf(stderr, "\t-k width\t\twidth of gridding kernel\n");
     fprintf(stderr, "\t-o oversamp\t\tgrid oversampling factor\n");
-    fprintf(stderr, "\t-s peskip\t\tnumber of phase encodes to skip at beginning\n");
-    fprintf(stderr, "\t-w\t\t\tuse Walsh adaptive coil combination\n");
+    fprintf(stderr, "\t-r cmds\t\t\tspecify custom recon commands\n");
+    fprintf(stderr, "\t\t\t\t  a\tdeapodize\n");
+    fprintf(stderr, "\t\t\t\t  c\tcrop\n");
+    fprintf(stderr, "\t\t\t\t  G\tdegrid\n");
+    fprintf(stderr, "\t\t\t\t  g\tgrid\n");
+    fprintf(stderr, "\t\t\t\t  D\tdensity pre-compensate\n");
+    fprintf(stderr, "\t\t\t\t  d\tdensity post-compensate\n");
+    fprintf(stderr, "\t\t\t\t  F\tFFT\n");
+    fprintf(stderr, "\t\t\t\t  f\tinverse FFT\n");
+    fprintf(stderr, "\t\t\t\t  w\tWalsh adaptive coil combine\n");
+    fprintf(stderr, "\t\t\t\t  s\tsum-of-squares coil combine\n");
+    fprintf(stderr, "\t\t\t\t(default is %s)\n", default_recon);
+    fprintf(stderr, "\t-s peskip\t\tnumber of initial phase encodes to skip\n");
 }
-
 
 
 int
@@ -637,32 +660,16 @@ main (int argc, char *argv[])
 {
     // for testing
     float2 *h_nudata, *h_img;
-    int sdc_flag;
     ra_t ra_in, ra_out;
     int c, index;
     char infile[1024], outfile[1024];
 
     opterr = 0;
-    while ((c = getopt (argc, argv, "Aac:d:Fhk:o:s:w")) != -1)
+    while ((c = getopt (argc, argv, "d:hk:o:s:")) != -1)
     {
         switch (c) {
-            case 'A':
-                flag_deapodize = 0;
-                break;
-            case 'a':
-                printf("Using adjoint transformation.\n");
-                flag_adjoint = 1;  // perform adjoint operation
-                break;
-            case 'c':
-                sdc_flag = atoi(optarg);
-                flag_precomp = sdc_flag & 1;
-                flag_postcomp = sdc_flag & 2;
-                break;
             case 'd':
                 dpe = atoi(optarg);
-                break;
-            case 'F':
-                flag_fft = 0;
                 break;
             case 'o':
                 oversamp = atof(optarg);
@@ -676,9 +683,6 @@ main (int argc, char *argv[])
             case 'h':
                 print_usage();
                 return 1;
-            case 'w':
-                flag_walsh = 1;
-                break;
             default:
                 print_usage();
                 return 1;
@@ -700,9 +704,6 @@ main (int argc, char *argv[])
     printf("PE spacing set to %d.\n", dpe);
     printf("Kernel width set to %.1f.\n", kernwidth);
     printf("Oversampling factor set to %.3f.\n", oversamp);
-    printf("Walsh combine? %d\n", flag_walsh);
-    printf("Precompensate? %d\n", flag_precomp);
-    printf("Postcompensate? %d\n", flag_postcomp);
     printf("Infile: %s\n", infile);
     printf("Outfile: %s\n", outfile);
 
@@ -739,7 +740,8 @@ main (int argc, char *argv[])
     clock_t start = clock();
 
     // the magic happens
-    recon_gar2d(h_img, h_nudata);
+    printf("recon command: %s\n", default_recon);
+    recon_gar2d(h_img, h_nudata, default_recon);
 
 
     clock_t end = clock();
