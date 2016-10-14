@@ -60,7 +60,7 @@ int dpe = 21;
 int peskip = 0;
 int flag_postcomp = 0;
 int flag_deapodize = 1;
-const char default_recon[] = "Dgfcsa\0";
+const char default_recon[] = "Dgfcwa\0";
 char recon_commands[MAX_RECON_CMDS];
 
 // non-uniform data shape: nchan x nrep x nro x npe
@@ -575,8 +575,8 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_indata, const char comm
             size_t data_offset = nchan*nro*(npe*s + peoffset);
             size_t img_offset = nimg*nimg*(nrep*s + t);
 
-            printf("[dev %d, stream %d] reconstructing slice %d/%d, dyn %d/%d from PEs %d-%d (offset %ld)\n", j%ndevices, j, s+1,
-                nz, t+1, nrep, t*dpe, (t+1)*dpe-1, data_offset);
+            printf("[dev %d, stream %d] reconstructing slice %d/%d, dyn %d/%d from PEs %d-%d (offset %ld)\n", 
+                j%ndevices, j, s+1, nz, t+1, nrep, t*dpe, (t+1)*dpe-1, data_offset);
 
             cuTry(cudaMemcpyAsync(d_nudata[j], h_indata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
 
@@ -602,10 +602,8 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_indata, const char comm
                         ngrid, nchan, nro, npe, kernwidth, oversamp, peskip);
                     break;
                 case 'F':
-                    fftwithshift(d_udata, j, ngrid, nchan);
+                    fftwithshift(d_udata, j, ngrid, nchan); // TODO: make unitary
                     break;
-                    // TODO: fix scaling
-                    // TODO: make unitary
                 case 'f':
                     fftwithshift(d_udata, j, ngrid, nchan);
                     break;
@@ -614,16 +612,15 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_indata, const char comm
                         nchan);
                     break;
                 case 'w':
-                    if (nchan > 1)
+                    if (nchan > 1) // TODO: make nchan = 1 here work
                         coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j],
                             d_coilimg[j], nimg, nchan, 1); // 0 works, 1 good, 3 optimal
-                        // TODO: nchan = 1;
                     break;
                 case 's':
                     coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan);
                     break;
                 default:
-                    fprintf(stderr, "unknown command character %c\n", command_string[k]);
+                    fprintf(stderr, "unknown command character %c encountered at position %d\n", command_string[k], k);
                     return;
                 }
             }
@@ -723,7 +720,7 @@ main (int argc, char *argv[])
 
     printf("reading %s\n", infile);
     ra_read(&ra_in, infile);
-    printf("dims = {%lld, %lld, %lld, %lld}\n", ra_in.dims[0],
+    printf("dims = {%lud, %lud, %lud, %lud}\n", ra_in.dims[0],
         ra_in.dims[1], ra_in.dims[2], ra_in.dims[3]);
     if (strchr(recon_commands, 'g') != NULL) {  // gridding
         nchan = ra_in.dims[0];
