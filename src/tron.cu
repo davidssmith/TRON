@@ -29,6 +29,7 @@
 #include <unistd.h>
 #include <err.h>
 #include <errno.h>
+#include <string.h>
 #include <math.h>
 #include <complex.h>
 #include <time.h>
@@ -74,7 +75,7 @@ int ngrid;
 int nz;
 int nimg;
 
-float oversamp = 2.f;  // TODO: compute ngrid from nx, ny and oversamp
+float oversamp = 1.25f;  // TODO: compute ngrid from nx, ny and oversamp
 float kernwidth = 2.f;
 size_t d_nudatasize; // size in bytes of non-uniform data
 size_t d_udatasize; // size in bytes of gridded data
@@ -586,7 +587,11 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata, const char comm
                     deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nimg, 1);
                     break;
                 case 'D':
-                    precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nchan, nro, npe_per_frame);
+                    precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nchan, nro,      
+                        npe_per_frame);
+                    break;
+                case 'd':
+                    flag_postcomp = 1;
                     break;
                 case 'g':
                     gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j],
@@ -599,16 +604,20 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata, const char comm
                 case 'F':
                     fftwithshift(d_udata, j, ngrid, nchan);
                     break;
-                    // TODO:: fix scaling
+                    // TODO: fix scaling
+                    // TODO: make unitary
                 case 'f':
                     fftwithshift(d_udata, j, ngrid, nchan);
                     break;
                 case 'c':
-                    crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid, nchan);
+                    crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid, 
+                        nchan);
                     break;
                 case 'w':
                     if (nchan > 1)
-                        coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan, 1); // 0 works, 1 good, 3 optimal
+                        coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j],
+                            d_coilimg[j], nimg, nchan, 1); // 0 works, 1 good, 3 optimal
+                        // TODO: nchan = 1;
                     break;
                 case 's':
                     coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan);
@@ -716,15 +725,17 @@ main (int argc, char *argv[])
     ra_read(&ra_in, infile);
     printf("dims = {%lld, %lld, %lld, %lld}\n", ra_in.dims[0],
         ra_in.dims[1], ra_in.dims[2], ra_in.dims[3]);
-    nchan = ra_in.dims[0];
-    nrep = ra_in.dims[1];
-    nro = ra_in.dims[2];
-    npe = ra_in.dims[3];
-    ngrid = nro*oversamp;
-    npe_per_frame = nro/2;
-    nimg = 3*nro/4;
-    nrep = (npe - npe_per_frame) / dpe;
-    nz = 1;
+    if (strchr(recon_commands, 'g') != NULL) {  // gridding 
+        nchan = ra_in.dims[0];
+        nrep = ra_in.dims[1];
+        nro = ra_in.dims[2];
+        npe = ra_in.dims[3];
+        ngrid = nro*oversamp;
+        npe_per_frame = nro/2;
+        nimg = nro/2;
+        nrep = (npe - npe_per_frame) / dpe;
+        nz = 1;
+    }
     h_nudata = (float2*)ra_in.data;
 
     assert(nchan % 2 == 0);
