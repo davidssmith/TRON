@@ -4,12 +4,24 @@ using RawArray
 using PyPlot
 
 
-r = raread("img_tron.ra")
+function rescale(x, factor=0.8)
+  xmax = maximum(x)
+  x[x .> factor*xmax] = factor*xmax
+  x = (x - minimum(x)) / (factor*xmax - minimum(x))
+  return x
+end
 
-println(size(r))
-n = round(Int,size(r,4)/2)
-r=abs(r[1,:,:,n])
-println(size(r))
+img = raread("img_tron.ra")
+
+println(size(img))
+n = round(Int,size(img,4)/2)
+m = round(Int,size(img,2)/2)
+r=abs(img[1,:,:,110:100:end])
+s=rotr90(abs(img[1,m,:,:]))
 
 #imshow(abs(mosaic(squeeze(r,4))),interpolation="nearest",cmap="gray")
-imshow((r),interpolation="nearest",cmap="gray")
+figure(1)
+imshow(rescale(mosaic(r)),interpolation="nearest",cmap="gray")
+
+figure(2)
+imshow((s),interpolation="nearest",cmap="gray")

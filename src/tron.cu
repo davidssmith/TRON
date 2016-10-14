@@ -560,7 +560,7 @@ tron_shutdown()
 
 
 __host__ void
-recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata, const char command_string[])
+recon_gar2d (float2 *h_img, const float2 *__restrict__ h_indata, const char command_string[])
 {
     tron_init();
 
@@ -578,7 +578,7 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata, const char comm
             printf("[dev %d, stream %d] reconstructing slice %d/%d, dyn %d/%d from PEs %d-%d (offset %ld)\n", j%ndevices, j, s+1,
                 nz, t+1, nrep, t*dpe, (t+1)*dpe-1, data_offset);
 
-            cuTry(cudaMemcpyAsync(d_nudata[j], h_nudata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
+            cuTry(cudaMemcpyAsync(d_nudata[j], h_indata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
 
             for (int k = 0; k < strlen(command_string); ++k)
             {
@@ -587,7 +587,7 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata, const char comm
                     deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nimg, 1);
                     break;
                 case 'D':
-                    precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nchan, nro,      
+                    precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nchan, nro,
                         npe_per_frame);
                     break;
                 case 'd':
@@ -610,7 +610,7 @@ recon_gar2d (float2 *h_img, const float2 *__restrict__ h_nudata, const char comm
                     fftwithshift(d_udata, j, ngrid, nchan);
                     break;
                 case 'c':
-                    crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid, 
+                    crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid,
                         nchan);
                     break;
                 case 'w':
@@ -668,7 +668,7 @@ int
 main (int argc, char *argv[])
 {
     // for testing
-    float2 *h_nudata, *h_img;
+    float2 *h_indata, *h_img;
     ra_t ra_in, ra_out;
     int c, index;
     char infile[1024], outfile[1024];
@@ -725,7 +725,7 @@ main (int argc, char *argv[])
     ra_read(&ra_in, infile);
     printf("dims = {%lld, %lld, %lld, %lld}\n", ra_in.dims[0],
         ra_in.dims[1], ra_in.dims[2], ra_in.dims[3]);
-    if (strchr(recon_commands, 'g') != NULL) {  // gridding 
+    if (strchr(recon_commands, 'g') != NULL) {  // gridding
         nchan = ra_in.dims[0];
         nrep = ra_in.dims[1];
         nro = ra_in.dims[2];
@@ -735,19 +735,29 @@ main (int argc, char *argv[])
         nimg = nro/2;
         nrep = (npe - npe_per_frame) / dpe;
         nz = 1;
+    } else if (strchr(recon_commands, 'G') != NULL) { // de-gridding
+      nchan = ra_in.dims[0];
+      nrep = ra_in.dims[1];
+      nro = ra_in.dims[2];
+      npe = ra_in.dims[3];
+      ngrid = nro*oversamp;
+      npe_per_frame = nro/2;
+      nimg = nro/2;
+      nrep = (npe - npe_per_frame) / dpe;
+      nz = 1;
     }
-    h_nudata = (float2*)ra_in.data;
+    h_indata = (float2*)ra_in.data;
 
     assert(nchan % 2 == 0);
 
-    printf("sanity check: nudata[0] = %f + %f i\n", h_nudata[0].x, h_nudata[0].y);
+    printf("sanity check: nudata[0] = %f + %f i\n", h_indata[0].x, h_indata[0].y);
 
     // allocate pinned memory, which allows async calls
 #ifdef CUDA_HOST_MALLOC
-    //cuTry(cudaMallocHost((void**)&h_nudata, nchan*nro*npe*sizeof(float2)));
+    //cuTry(cudaMallocHost((void**)&h_indata, nchan*nro*npe*sizeof(float2)));
     cuTry(cudaMallocHost((void**)&h_img, nrep*nimg*nimg*nz*sizeof(float2)));
 #else
-    //h_nudata = (float2*)malloc(nchan*nro*npe*sizeof(float2));
+    //h_indata = (float2*)malloc(nchan*nro*npe*sizeof(float2));
     h_img = (float2*)malloc(nrep*nimg*nimg*nz*sizeof(float2));
 #endif
 
@@ -756,7 +766,7 @@ main (int argc, char *argv[])
     clock_t start = clock();
 
     // the magic happens
-    recon_gar2d(h_img, h_nudata, recon_commands);
+    recon_gar2d(h_img, h_indata, recon_commands);
 
 
     clock_t end = clock();
@@ -782,10 +792,10 @@ main (int argc, char *argv[])
 
     ra_free(&ra_in);
 #ifdef CUDA_HOST_MALLOC
-    //cudaFreeHost(&h_nudata);
+    //cudaFreeHost(&h_indata);
     cudaFreeHost(&h_img);
 #else
-    //free(h_nudata);
+    //free(h_indata);
     free(h_img);
 #endif
     cudaDeviceReset();
