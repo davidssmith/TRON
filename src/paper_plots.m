@@ -9,9 +9,9 @@ data = single(squeeze(raread('../data/ex_whole_body.ra')));
 data = shiftdim(data,1);
 
 %%
-N=3*nro/4;
+N=2*nro/4;
 npe_per_slice = nro/2;
-dpe = 89;
+dpe = 512;
 
 nslices = floor((npe - npe_per_slice) / dpe);
 disp_slice=round(nslices/2);

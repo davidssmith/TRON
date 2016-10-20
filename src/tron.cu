@@ -72,15 +72,15 @@ int nrep;  // # of repeated measurements of same trajectory
 int nro;
 int npe;
 int ngrid;
-int nz;
+int nx, ny, nz;
 int nimg;
 
 float oversamp = 1.25f;  // TODO: compute ngrid from nx, ny and oversamp
 float kernwidth = 2.f;
 size_t d_nudatasize; // size in bytes of non-uniform data
 size_t d_udatasize; // size in bytes of gridded data
-size_t d_coilimgsize; // coil images
-size_t d_imgsize; // coil-combined image
+size_t d_coilimgsize; // multi-coil image size
+size_t d_imgsize; // coil-combined image size
 size_t d_gridsize;
 
 // CONSTANTS
@@ -517,10 +517,10 @@ tron_init()
 
   // array sizes
   d_nudatasize = nchan*nro*npe_per_frame*sizeof(float2);  // input data
-  d_udatasize = nchan*ngrid*ngrid*sizeof(float2); // gridded data
+  d_udatasize = nchan*ngrid*ngrid*sizeof(float2); // multi-coil gridded data
+  d_gridsize = ngrid*ngrid*sizeof(float2);  // single channel grid size
   d_coilimgsize = nchan*nimg*nimg*sizeof(float2); // coil images
   d_imgsize = nimg*nimg*sizeof(float2); // coil-combined image
-  d_gridsize = ngrid*ngrid*sizeof(float2);
 
 
   for (int j = 0; j < NSTREAMS; ++j) // allocate data and initialize apodization and kernel texture
@@ -720,9 +720,18 @@ main (int argc, char *argv[])
 
     printf("reading %s\n", infile);
     ra_read(&ra_in, infile);
+    h_indata = (float2*)ra_in.data;
     printf("dims = {%lud, %lud, %lud, %lud}\n", ra_in.dims[0],
         ra_in.dims[1], ra_in.dims[2], ra_in.dims[3]);
-    if (strchr(recon_commands, 'g') != NULL) {  // gridding
+        
+    // figure out if we are gridding or degridding first
+    char *gridloc = strchr(recon_commands, 'g'); 
+    char *degridloc = strchr(recon_commands, 'G');
+    if (gridloc == NULL && degridloc == NULL) {
+        error("Neither a gridding nor degridding command was specified!\n");
+        return 1;
+    }
+    if (gridloc < degridloc) {  // gridding first
         nchan = ra_in.dims[0];
         nrep = ra_in.dims[1];
         nro = ra_in.dims[2];
@@ -732,18 +741,19 @@ main (int argc, char *argv[])
         nimg = nro/2;
         nrep = (npe - npe_per_frame) / dpe;
         nz = 1;
-    } else if (strchr(recon_commands, 'G') != NULL) { // de-gridding
-      nchan = ra_in.dims[0];
-      nrep = ra_in.dims[1];
-      nro = ra_in.dims[2];
-      npe = ra_in.dims[3];
-      ngrid = nro*oversamp;
-      npe_per_frame = nro/2;
-      nimg = nro/2;
-      nrep = (npe - npe_per_frame) / dpe;
-      nz = 1;
+    } else if (degridloc < gridloc) { // de-gridding
+        nchan = ra_in.dims[0];
+        nrep = ra_in.dims[1];
+        nx = ra_in.dims[2];
+        ny = ra_in.dims[3];
+        nimg = nx;
+        nro = 2.f*nimg;
+        ngrid = nro*oversamp;
+        npe_per_frame = nro/2;
+        nrep = (npe - npe_per_frame) / dpe;
+        npe = dpe*nrep + npe_per_frame;
+        nz = 1;
     }
-    h_indata = (float2*)ra_in.data;
 
     assert(nchan % 2 == 0);
 
