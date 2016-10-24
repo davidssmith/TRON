@@ -43,8 +43,8 @@
 // CONFIGURATION PARAMETERS
 #define NSTREAMS        2
 #define MULTI_GPU       1
-#define NCHAN           8
-#define MAXCHAN         8
+#define NCHAN           6
+#define MAXCHAN         16
 #define MAX_RECON_CMDS  20
 const int blocksize = 96;    // CUDA kernel parameters, TWEAK HERE to optimize
 const int gridsize = 2048;
@@ -60,6 +60,7 @@ int dpe = 21;
 int peskip = 0;
 int flag_postcomp = 0;
 int flag_deapodize = 1;
+int flag_input_uniform;
 const char default_recon[] = "Dgfcwa\0";
 char recon_commands[MAX_RECON_CMDS];
 
@@ -533,18 +534,21 @@ tron_init()
       cuTry(cudaMalloc((void **)&d_udata[j], d_udatasize));
       // cuTry(cudaMemset(d_udata[j], 0, p->d_udatasize));
       cuTry(cudaMalloc((void **)&d_coilimg[j], d_coilimgsize));
-      cuTry(cudaMalloc((void **)&d_b1[j], d_coilimgsize));
+      //cuTry(cudaMalloc((void **)&d_b1[j], d_coilimgsize));
       cuTry(cudaMalloc((void **)&d_img[j], d_imgsize));
+
+      // TODO: only fill apod if depapodize is called
       cuTry(cudaMalloc((void **)&d_apodos[j], d_gridsize));
       cuTry(cudaMalloc((void **)&d_apod[j], d_imgsize));
       fillapod(d_apodos[j], ngrid);
       crop<<<nimg,nimg>>>(d_apod[j], nimg, d_apodos[j], ngrid, 1);
       cuTry(cudaFree(d_apodos[j]));
+
   }
 }
 
 void
-tron_shutdown()]
+tron_shutdown()
 {
     printf("freeing device memory\n");
     for (int j = 0; j < NSTREAMS; ++j) { // free allocated memory
@@ -552,7 +556,7 @@ tron_shutdown()]
         cuTry(cudaFree(d_nudata[j]));
         cuTry(cudaFree(d_udata[j]));
         cuTry(cudaFree(d_coilimg[j]));
-        cuTry(cudaFree(d_b1[j]));
+        //cuTry(cudaFree(d_b1[j]));
         cuTry(cudaFree(d_img[j]));
         cuTry(cudaFree(d_apod[j]));
         cudaStreamDestroy(stream[j]);
@@ -566,68 +570,70 @@ recon_gar2d (float2 *h_outdata, const float2 *__restrict__ h_indata, const char 
     tron_init();
 
     printf("iterating over %d slices\n", nz);
-    for (int s = 0; s < nz; ++s)
-        for (int t = 0; t < nrep; ++t)
-        {
-            int j = t % NSTREAMS; // j is stream index
-            if (MULTI_GPU) cudaSetDevice(j % ndevices);
+    for (int t = 0; t < nrep; ++t)
+    {
+        int j = t % NSTREAMS; // j is stream index
+        if (MULTI_GPU) cudaSetDevice(j % ndevices);
 
-            int peoffset = t*dpe;
-            size_t data_offset = nchan*nro*(npe*s + peoffset);
-            size_t img_offset = nimg*nimg*(nrep*s + t);
+        int peoffset = t*dpe;
+        size_t data_offset = nchan*nro*peoffset;
+        size_t img_offset = nimg*nimg*t;
 
-            printf("[dev %d, stream %d] reconstructing slice %d/%d, dyn %d/%d from PEs %d-%d (offset %ld)\n",
-                j%ndevices, j, s+1, nz, t+1, nrep, t*dpe, (t+1)*dpe-1, data_offset);
+        printf("[dev %d, stream %d] reconstructing rep %d/%d from PEs %d-%d (offset %ld)\n",
+            j%ndevices, j, t+1, nrep, t*dpe, (t+1)*dpe-1, data_offset);
 
+        if (flag_input_uniform){
+            cuTry(cudaMemcpyAsync(d_udata[j], h_indata + data_offset, d_udatasize, cudaMemcpyHostToDevice, stream[j]));
+        } else {
             cuTry(cudaMemcpyAsync(d_nudata[j], h_indata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
-
-            for (int k = 0; k < strlen(command_string); ++k)
-            {
-                switch (command_string[k]) {
-                case 'a':
-                    deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nimg, 1);
-                    break;
-                case 'D':
-                    precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nchan, nro,
-                        npe_per_frame);
-                    break;
-                case 'd':
-                    flag_postcomp = 1;
-                    break;
-                case 'g':
-                    gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j],
-                        ngrid, nchan, nro, npe_per_frame, kernwidth, oversamp, peskip+peoffset, flag_postcomp);
-                    break;
-                case 'G':
-                    degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_udata[j],
-                        ngrid, nchan, nro, npe, kernwidth, oversamp, peskip);
-                    break;
-                case 'F':
-                    fftwithshift(d_udata, j, ngrid, nchan); // TODO: make unitary
-                    break;
-                case 'f':
-                    fftwithshift(d_udata, j, ngrid, nchan);
-                    break;
-                case 'c':
-                    crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid,
-                        nchan);
-                    break;
-                case 'w':
-                    if (nchan > 1) // TODO: make nchan = 1 here work
-                        coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j],
-                            d_coilimg[j], nimg, nchan, 1); // 0 works, 1 good, 3 optimal
-                    break;
-                case 's':
-                    coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan);
-                    break;
-                default:
-                    fprintf(stderr, "unknown command character %c encountered at position %d\n", command_string[k], k);
-                    return;
-                }
-            }
-
-            cuTry(cudaMemcpyAsync(h_outdata + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
         }
+
+        for (int k = 0; k < strlen(command_string); ++k)
+        {
+            switch (command_string[k]) {
+            case 'a':
+                deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nimg, 1);
+                break;
+            case 'D':
+                precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nchan, nro,
+                    npe_per_frame);
+                break;
+            case 'd':
+                flag_postcomp = 1;
+                break;
+            case 'g':
+                gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j],
+                    ngrid, nchan, nro, npe_per_frame, kernwidth, oversamp, peskip+peoffset, flag_postcomp);
+                break;
+            case 'G':
+                degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_udata[j],
+                    ngrid, nchan, nro, npe, kernwidth, oversamp, peskip);
+                break;
+            case 'F':
+            case 'f':
+                fftwithshift(d_udata, j, ngrid, nchan); // TODO: make unitary
+                break;
+            case 'c':
+                crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid,
+                    nchan);
+                break;
+            case 'w':
+                if (nchan > 1) // TODO: make nchan = 1 here work
+                    coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j],
+                        d_coilimg[j], nimg, nchan, 1); // 0 works, 1 good, 3 optimal
+                break;
+            case 's':
+                coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan);
+                break;
+            default:
+                fprintf(stderr, "unknown command character %c encountered at position %d\n", command_string[k], k);
+                return;
+            }
+        }
+
+
+        cuTry(cudaMemcpyAsync(h_outdata + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
+    }
 
     tron_shutdown();
 }
@@ -641,7 +647,7 @@ recon_gar2d (float2 *h_outdata, const float2 *__restrict__ h_indata, const char 
 void
 print_usage()
 {
-    fprintf(stderr, "Usage: tron [-h] [-r cmds] [-d dpe] [-k width] [-o oversamp] [-s peskip] <infile.ra> [outfile.ra]\n");
+    fprintf(stderr, "Usage: tron [-hu] [-r cmds] [-d dpe] [-k width] [-o oversamp] [-s peskip] <infile.ra> [outfile.ra]\n");
     fprintf(stderr, "\t-d dpe\t\t\tnumber of phase encodes to skip between slices\n");
     fprintf(stderr, "\t-h\t\t\tshow this help\n");
     fprintf(stderr, "\t-k width\t\twidth of gridding kernel\n");
@@ -656,9 +662,11 @@ print_usage()
     fprintf(stderr, "\t\t\t\t  F\tFFT\n");
     fprintf(stderr, "\t\t\t\t  f\tinverse FFT\n");
     fprintf(stderr, "\t\t\t\t  w\tWalsh adaptive coil combine\n");
-    fprintf(stderr, "\t\t\t\t  s\tsum-of-squares coil combine\n");
+    fprintf(stderr, "\t\t\t\t  s\terrorsum-of-squares coil combine\n");
     fprintf(stderr, "\t\t\t\t(default is %s)\n", default_recon);
     fprintf(stderr, "\t-s peskip\t\tnumber of initial phase encodes to skip\n");
+    fprintf(stderr, "\t-u\t\tinput data is uniform\n");
+
 }
 
 
@@ -673,7 +681,7 @@ main (int argc, char *argv[])
     strncpy(recon_commands, default_recon, MAX_RECON_CMDS);
 
     opterr = 0;
-    while ((c = getopt (argc, argv, "d:hk:o:r:s:")) != -1)
+    while ((c = getopt (argc, argv, "d:hk:o:r:s:u")) != -1)
     {
         switch (c) {
             case 'd':
@@ -693,6 +701,9 @@ main (int argc, char *argv[])
                 return 1;
             case 'r':
                 strncpy(recon_commands, optarg, MAX_RECON_CMDS);
+                break;
+            case 'u':
+                flag_input_uniform = 1;
                 break;
             default:
                 print_usage();
@@ -730,14 +741,15 @@ main (int argc, char *argv[])
     char *gridloc = strchr(recon_commands, 'g');
     char *degridloc = strchr(recon_commands, 'G');
     if (gridloc == NULL && degridloc == NULL) {
-        error("Neither a gridding nor degridding command was specified!\n");
+        fprintf(stderr, "Neither a gridding nor degridding command was specified!\n");
         return 1;
     }
 
     clock_t start = clock();
 
 
-    if (gridloc < degridloc) {  // gridding first, reading non-uniform data
+    if (gridloc < degridloc || degridloc == NULL) {  // gridding first, reading non-uniform data
+        flag_input_uniform = 0;
         nchan = ra_in.dims[0];
         nrep = ra_in.dims[1];
         nro = ra_in.dims[2];
@@ -748,11 +760,10 @@ main (int argc, char *argv[])
         nrep = (npe - npe_per_frame) / dpe;
         nz = 1;
         h_outdatasize = nrep*nimg*nimg*nz*sizeof(float2);
-
-
     }
-    else if (degridloc < gridloc)
+    else if (degridloc < gridloc || gridloc == NULL)
     { // de-gridding first, reading Cartesian
+        flag_input_uniform = 1;
         nchan = ra_in.dims[0];
         nrep = ra_in.dims[1];
         nx = ra_in.dims[2];
@@ -764,16 +775,16 @@ main (int argc, char *argv[])
         nrep = (npe - npe_per_frame) / dpe;
         npe = dpe*nrep + npe_per_frame;
         nz = 1;
-        h_outdatasize = nchan*nrep*nro*npe*sizeof(float2);
+        h_outdatasize = nrep*nro*npe*sizeof(float2);
     }
 
     assert(nchan % 2 == 0);
 
-
+    printf("outdatasize: %lld\n", h_outdatasize);
     // allocate pinned memory, which allows async calls
 #ifdef CUDA_HOST_MALLOC
     //cuTry(cudaMallocHost((void**)&h_indata, nchan*nro*npe*sizeof(float2)));
-    cuTry(cudaMallocHost((void**)&h_outdata, h_outdatasize);
+    cuTry(cudaMallocHost((void**)&h_outdata, h_outdatasize));
 #else
     //h_indata = (float2*)malloc(nchan*nro*npe*sizeof(float2));
     h_outdata = (float2*)malloc(h_outdatasize);
