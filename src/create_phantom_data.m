@@ -3,10 +3,10 @@
 clear all;
 
 %%
-N = 256;
+N = 128;
 image = phantom(N);
 nro = 2*N;
-npe = N;
+npe = 2*N;
 
 %% k-space coordinates: linear radial
 k = zeros(2,nro,npe);
@@ -24,9 +24,12 @@ end
 
 %% assume Ram-Lak SDC for now
 w = zeros(nro,npe);
+a = (1-1/npe)*2/nro;
+b = 1/npe;
 for pe = 1:npe
     for ro = 1:nro
-        w(ro,pe) = (abs(ro - nro/2)*npe/nro + 1) / npe;
+        r = ro - nro/2;
+        w(ro,pe) = a*abs(r) + b;
     end
 end
 
@@ -35,6 +38,7 @@ imagesc(w)
 xlabel('phase encode');
 ylabel('readout');
 title('sample weights');
+colorbar;
 
 %% Fessler's IRT
 addpath('../contrib/irt');
@@ -60,7 +64,7 @@ imagesc(abs(data));
 title('data');
 
 figure(4);
-imagesc([image_irt image]);
+imagesc([image_irt; image]);
 colormap(gray);
 title('IRT image');
 colorbar;

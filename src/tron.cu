@@ -76,7 +76,7 @@ int ngrid;
 int nx, ny, nz;
 int nimg;
 
-float oversamp = 1.25f;  // TODO: compute ngrid from nx, ny and oversamp
+float oversamp = 2.f;  // TODO: compute ngrid from nx, ny and oversamp
 float kernwidth = 2.f;
 size_t d_nudatasize; // size in bytes of non-uniform data
 size_t d_udatasize; // size in bytes of gridded data
@@ -354,11 +354,13 @@ deapodize (float2 *img, const float2 * __restrict__ apod, const int nimg, const 
 
 
 __global__ void
-precompensate (float2 *nudata, const int nchan, const int nro, const int nrest)
+precompensate (float2 *nudata, const int nchan, const int nro, const int npe, const int nrest)
 {
+    float a = (2.f  - 2.f / float(npe)) / float(nro);
+    float b = 1.f / float(npe);
     for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nrest; id += blockDim.x * gridDim.x)
         for (int r = 0; r < nro; ++r) {
-            float sdc = 2*(abs(r - nro/2) + 1) / float(nro + 1);
+            float sdc = a*fabsf(r - float(nro/2)) + b;
             for (int c = 0; c < nchan; ++c)
                 nudata[nro*nchan*id + nchan*r + c] *= sdc;
         }
@@ -595,7 +597,7 @@ recon_gar2d (float2 *h_outdata, const float2 *__restrict__ h_indata, const char 
                 deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nimg, 1);
                 break;
             case 'D':
-                precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nchan, nro,
+                precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nchan, nro, npe,
                     npe_per_frame);
                 break;
             case 'd':
