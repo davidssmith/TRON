@@ -61,6 +61,7 @@ int peskip = 0;
 int flag_postcomp = 0;
 int flag_deapodize = 1;
 int flag_input_uniform;
+int flag_golden_angle = 0;
 const char default_recon[] = "Dgfcwa\0";
 char recon_commands[MAX_RECON_CMDS];
 
@@ -284,6 +285,21 @@ gridkernel (const float dx, const float dy, const float kernwidth, const float o
 #endif
 }
 
+__host__ __device__ inline float
+degridkernel (const float dx, const float dy, const float kernwidth, const float oversamp)
+{
+    float r2 = dx*dx + dy*dy;
+#ifdef KERN_KB
+    //const float kernwidth = 2.f;
+#define SQR(x) ((x)*(x))
+#define BETA (M_PI*sqrtf(SQR(kernwidth/oversamp*(oversamp-0.5))-0.8))
+    return r2 < kernwidth*kernwidth ? i0f(BETA * sqrtf (1.f - r2/kernwidth/kernwidth)) / i0f(BETA): 0.f;
+#else
+    const float sigma = 0.33f; // ballparked from Jackson et al. 1991. IEEE TMI, 10(3), 473–8
+    return expf(-0.5f*r2/sigma/sigma);
+#endif
+}
+
 __device__ inline float
 modang (const float x)   /* rescale arbitrary angles to [0,2PI] interval */
 {
@@ -385,7 +401,7 @@ extern "C" {  // don't mangle name, so can call from other languages
 __global__ void
 gridradial2d (float2 *udata, const float2 * __restrict__ nudata, const int ngrid,
     const int nchan, const int nro, const int npe, const float kernwidth, const float oversamp,
-const int peskip, const int flag_postcomp)
+const int peskip, const int flag_postcomp, const int flag_golden_angle)
 {
     // udata: [NCHAN x NGRID x NGRID], nudata: NCHAN x NRO x NPE
     //float oversamp = float(ngrid) / float(nro); // oversampling factor
@@ -428,7 +444,7 @@ const int peskip, const int flag_postcomp)
         // for diff acquisitions
         for (int pe = 0; pe < npe; ++pe)
         {
-            float profile_theta = modang(PHI * float(pe + peskip));
+            float profile_theta = flag_golden_angle ? modang(PHI * float(pe + peskip)) : float(pe) * M_PI / float(npe);
             //float dtheta1 = fabsf(modang(profile_theta - gridpoint_theta));
             //float dtheta2 = fabsf(modang(profile_theta + M_PI) - gridpoint_theta);
             //float dtheta1 = fabsf(profile_theta - gridpoint_theta);
@@ -476,7 +492,7 @@ __global__ void
 degridradial2d (
     float2 *nudata, const float2 * __restrict__ udata, const int ngrid,
     const int nchan, const int nro, const int npe, const float kernwidth,
-    const float oversamp, const int peskip)
+    const float oversamp, const int peskip, const int flag_golden_angle)
 {
     // udata: [NCHAN x NGRID x NGRID], nudata: NCHAN x NRO x NPE
     //float oversamp = float(ngrid) / float(nro); // oversampling factor
@@ -486,7 +502,7 @@ degridradial2d (
         int pe = id / nro; // find my location in the non-uniform data
         int ro = id % nro;
         float r = ro - 0.5f * nro; // convert indices to (r,theta) coordinates
-        float t = modang(PHI*(pe + peskip)); // golden angle specific!
+        float t = flag_golden_angle ? modang(PHI*(pe + peskip)) : float(pe) * M_PI / float(npe);
         float kx = r*cos(t); // Cartesian freqs of non-Cart datum  // TODO: _sincosf?
         float ky = r*sin(t);
         float x = oversamp*( kx + 0.5f * nro);  // (x,y) coordinates in grid units
@@ -497,7 +513,7 @@ degridradial2d (
         for (int ux = fmaxf(0.f,x-kernwidth); ux <= fminf(ngrid-1,x+kernwidth); ++ux)
         for (int uy = fmaxf(0.f,y-kernwidth); uy <= fminf(ngrid-1,y+kernwidth); ++uy)
         {
-            float wgt = gridkernel(ux - x, uy - y, kernwidth, oversamp);
+            float wgt = degridkernel(ux - x, uy - y, kernwidth, oversamp);
             for (int ch = 0; ch < nchan; ++ch) {
                 float2 c = udata[nchan*(ux*ngrid + uy) + ch];
                 nudata[nchan*id + ch].x += wgt*c.x;
@@ -605,11 +621,11 @@ recon_gar2d (float2 *h_outdata, const float2 *__restrict__ h_indata, const char 
                 break;
             case 'g':
                 gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j],
-                    ngrid, nchan, nro, npe_per_frame, kernwidth, oversamp, peskip+peoffset, flag_postcomp);
+                    ngrid, nchan, nro, npe_per_frame, kernwidth, oversamp, peskip+peoffset, flag_postcomp, flag_golden_angle);
                 break;
             case 'G':
                 degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_udata[j],
-                    ngrid, nchan, nro, npe, kernwidth, oversamp, peskip);
+                    ngrid, nchan, nro, npe, kernwidth, oversamp, peskip, flag_golden_angle);
                 break;
             case 'F':
             case 'f':
@@ -651,14 +667,15 @@ print_usage()
 {
     fprintf(stderr, "Usage: tron [-hu] [-r cmds] [-d dpe] [-k width] [-o oversamp] [-s peskip] <infile.ra> [outfile.ra]\n");
     fprintf(stderr, "\t-d dpe\t\t\tnumber of phase encodes to skip between slices\n");
+    fprintf(stderr, "\t-g\t\t\tgolden angle radial\n");
     fprintf(stderr, "\t-h\t\t\tshow this help\n");
     fprintf(stderr, "\t-k width\t\twidth of gridding kernel\n");
     fprintf(stderr, "\t-o oversamp\t\tgrid oversampling factor\n");
     fprintf(stderr, "\t-r cmds\t\t\tspecify custom recon commands\n");
     fprintf(stderr, "\t\t\t\t  a\tdeapodize\n");
     fprintf(stderr, "\t\t\t\t  c\tcrop\n");
-    fprintf(stderr, "\t\t\t\t  G\tdegrid\n");
-    fprintf(stderr, "\t\t\t\t  g\tgrid\n");
+    fprintf(stderr, "\t\t\t\t  G\tadjoint NUFFT\n");
+    fprintf(stderr, "\t\t\t\t  g\tNUFFT\n");
     fprintf(stderr, "\t\t\t\t  D\tdensity pre-compensate\n");
     fprintf(stderr, "\t\t\t\t  d\tdensity post-compensate\n");
     fprintf(stderr, "\t\t\t\t  F\tFFT\n");
@@ -683,7 +700,7 @@ main (int argc, char *argv[])
     strncpy(recon_commands, default_recon, MAX_RECON_CMDS);
 
     opterr = 0;
-    while ((c = getopt (argc, argv, "d:hk:o:r:s:u")) != -1)
+    while ((c = getopt (argc, argv, "d:ghk:o:r:s:u")) != -1)
     {
         switch (c) {
             case 'd':
@@ -697,6 +714,9 @@ main (int argc, char *argv[])
                 break;
             case 'k':
                 kernwidth = atof(optarg);
+                break;
+            case 'g':
+                flag_golden_angle = 1;
                 break;
             case 'h':
                 print_usage();
