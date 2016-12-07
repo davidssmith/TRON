@@ -25,3 +25,9 @@ imshow(rescale(mosaic(r)),interpolation="nearest",cmap="gray")
 
 figure(2)
 imshow((s),interpolation="nearest",cmap="gray")
+
+
+img = raread("shepplogan_tron.ra")
+r = squeeze(img[1,:,:,1],1);
+figure(3)
+imshow(rescale(abs(r)),interpolation="nearest",cmap="gray")

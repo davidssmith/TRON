@@ -62,7 +62,8 @@ int flag_postcomp = 0;
 int flag_deapodize = 1;
 int flag_input_uniform;
 int flag_golden_angle = 0;
-const char default_recon[] = "Dgfcwa\0";
+const char default_nufft[] = "FGa\0";
+const char default_nufft_adj[] = "Dgfcwa\0";
 char recon_commands[MAX_RECON_CMDS];
 
 // non-uniform data shape: nchan x nrep x nro x npe
@@ -682,7 +683,7 @@ print_usage()
     fprintf(stderr, "\t\t\t\t  f\tinverse FFT\n");
     fprintf(stderr, "\t\t\t\t  w\tWalsh adaptive coil combine\n");
     fprintf(stderr, "\t\t\t\t  s\terrorsum-of-squares coil combine\n");
-    fprintf(stderr, "\t\t\t\t(default is %s)\n", default_recon);
+    fprintf(stderr, "\t\t\t\t(default is %s)\n", default_nufft_adj);
     fprintf(stderr, "\t-s peskip\t\tnumber of initial phase encodes to skip\n");
     fprintf(stderr, "\t-u\t\tinput data is uniform\n");
 
@@ -697,7 +698,7 @@ main (int argc, char *argv[])
     ra_t ra_in, ra_out;
     int c, index;
     char infile[1024], outfile[1024];
-    strncpy(recon_commands, default_recon, MAX_RECON_CMDS);
+    strncpy(recon_commands, default_nufft_adj, MAX_RECON_CMDS);
 
     opterr = 0;
     while ((c = getopt (argc, argv, "d:ghk:o:r:s:u")) != -1)
@@ -792,15 +793,14 @@ main (int argc, char *argv[])
         ny = ra_in.dims[3];
         nimg = nx;
         nro = 2.f*nimg;
-        ngrid = nro*oversamp;
-        npe_per_frame = nro/2;
-        nrep = (npe - npe_per_frame) / dpe;
-        npe = dpe*nrep + npe_per_frame;
+        ngrid = nimg;
+        npe_per_frame = nro;
+        npe = nro;  //dpe*nrep + npe_per_frame;
         nz = 1;
         h_outdatasize = nrep*nro*npe*sizeof(float2);
     }
 
-    assert(nchan % 2 == 0);
+    assert(nchan % 2 == 0 || nchan == 1);
 
     printf("outdatasize: %lld\n", h_outdatasize);
     // allocate pinned memory, which allows async calls
