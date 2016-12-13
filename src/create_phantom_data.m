@@ -1,6 +1,10 @@
 % initialize IRT and gpuNUFFT here -- depends on your setup
 
 clear all; clc; clf;
+%LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6 matlab
+
+
+
 %% Paths
 
 % Fessler's IRT
@@ -14,7 +18,7 @@ addpath('/home/dss/git/bart/matlab');
 
 
 %%
-N = 128;
+N = 256;
 image = phantom(N);
 nro = 2*N;
 npe = 2*N;
@@ -74,17 +78,16 @@ colorbar;
 
 nrmse_irt = norm(image_irt - image) / N / N;
 
-fprintf('IRT nmrse: %g\n', nrmse_irt);
+fprintf('IRT      nmrse: %g\n', nrmse_irt);
 % IRT nmrse: 0.0010093
 
 %% gpuNUFFT
 K = reshape(traj, 3, []);
 
-G = gpuNUFFT(K,w,osf,wg,sw,[N,N],[],true);
+G = gpuNUFFT(K/2/pi,w,osf,wg,sw,[N,N],[],true);
 data = G*image(:);
-data = reshape(data, nro, npe) / nro / npe;
-data = data .* w;
-image_gn = reshape(real(G'*data(:)), N, N);
+data = reshape(data, nro, npe);
+image_gn = reshape(real(G'*data(:)), N, N) / wg^3;
 
 subplot(223);
 imagesc(abs(squeeze(image_gn)))
@@ -113,7 +116,7 @@ colormap(gray);
 title('BART');
 
 nrmse_bart = norm(image_bart - image) / N / N;
-fprintf('BART nmrse: %g\n', nrmse_bart);
+fprintf('BART     nmrse: %g\n', nrmse_bart);
 
 %%
 
