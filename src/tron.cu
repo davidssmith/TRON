@@ -397,6 +397,25 @@ crop (float2* dst, const int ndst, const float2* __restrict__ src, const int nsr
     }
 }
 
+__global__ void
+pad (float2* dst, const int ndst, const float2* __restrict__ src, const int nsrc, const int nchan)
+{
+    // set whole array to zero first (not most efficient!)
+    for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < ndst*ndst; id += blockDim.x * gridDim.x)
+        for (int c = 0; c < nchan; ++c)
+            dst[nchan*id + c] = make_float2(0.f, 0.f);
+    // insert src into center of dst
+    const int w = (ndst - nsrc) / 2;
+    for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nsrc*nsrc; id += blockDim.x * gridDim.x)
+    {
+        int xdst = id / nsrc;
+        int ydst = id % nsrc;
+        int dstid = (xdst + w)*nsrc + ydst + w;
+        for (int c = 0; c < nchan; ++c)
+            dst[nchan*dstid + c] = src[nchan*id + c];
+    }
+}
+
 extern "C" {  // don't mangle name, so can call from other languages
 
 __global__ void
@@ -510,7 +529,7 @@ degridradial2d (
         float y = oversamp*(-ky + 0.5f * nro);
 
         for (int ch = 0; ch < nchan; ++ch) // zero my elements
-             nudata[nchan*id + ch] = make_float2(0.f,0.f);
+             nudata[nchan*id + ch] = make_float2(0.f, 0.f);
         for (int ux = fmaxf(0.f,x-kernwidth); ux <= fminf(ngrid-1,x+kernwidth); ++ux)
         for (int uy = fmaxf(0.f,y-kernwidth); uy <= fminf(ngrid-1,y+kernwidth); ++uy)
         {
@@ -602,7 +621,7 @@ recon_gar2d (float2 *h_outdata, const float2 *__restrict__ h_indata, const char 
             j%ndevices, j, t+1, nrep, t*dpe, (t+1)*dpe-1, data_offset);
 
         if (flag_input_uniform){
-            cuTry(cudaMemcpyAsync(d_udata[j], h_indata + data_offset, d_udatasize, cudaMemcpyHostToDevice, stream[j]));
+            cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
         } else {
             cuTry(cudaMemcpyAsync(d_nudata[j], h_indata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
         }
@@ -793,7 +812,7 @@ main (int argc, char *argv[])
         ny = ra_in.dims[3];
         nimg = nx;
         nro = 2.f*nimg;
-        ngrid = nimg;
+        ngrid = nimg*oversamp;
         npe_per_frame = nro;
         npe = nro;  //dpe*nrep + npe_per_frame;
         nz = 1;
