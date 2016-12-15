@@ -52,19 +52,17 @@ const int gridsize = 2048;
 // GLOBAL VARIABLES
 float2 *d_nudata[NSTREAMS], *d_udata[NSTREAMS], *d_coilimg[NSTREAMS],
     *d_img[NSTREAMS], *d_b1[NSTREAMS], *d_apodos[NSTREAMS], *d_apod[NSTREAMS];
-cufftHandle fft_plan[NSTREAMS];
+cufftHandle fft_plan[NSTREAMS], fft_plan_os[NSTREAMS];
 cudaStream_t stream[NSTREAMS];
 int ndevices;
 int npe_per_frame;
 int dpe = 21;
 int peskip = 0;
+int flag_adjoint = 0;
 int flag_postcomp = 0;
 int flag_deapodize = 1;
 int flag_input_uniform;
 int flag_golden_angle = 0;
-const char default_nufft[] = "FGa\0";
-const char default_nufft_adj[] = "Dgfcwa\0";
-char recon_commands[MAX_RECON_CMDS];
 
 // non-uniform data shape: nchan x nrep x nro x npe
 // uniform data shape:     nchan x nrep x ngrid x ngrid x nz
@@ -154,26 +152,25 @@ fftshift (float2 *dst, const int n, const int nchan)
 
 
 __host__ void
-fft_init(const int j, const int ngrid, const int nchan)
+fft_init(cufftHandle *plan, const int nx, const int ny, const int nchan)
 {
   // setup FFT
   const int rank = 2;
   int idist = 1, odist = 1, istride = nchan, ostride = nchan;
-  int n[2] = {ngrid, ngrid};
-  int inembed[]  = {ngrid, ngrid};
-  int onembed[]  = {ngrid, ngrid};
-  cufftSafeCall(cufftPlanMany(&fft_plan[j], rank, n, onembed, ostride, odist,
+  int n[2] = {nx, ny};
+  int inembed[]  = {nx, ny};
+  int onembed[]  = {nx, ny};
+  cufftSafeCall(cufftPlanMany(plan, rank, n, onembed, ostride, odist,
       inembed, istride, idist, CUFFT_C2C, nchan));
-  cufftSafeCall(cufftSetStream(fft_plan[j], stream[j]));
 }
 
 
 __host__ void
-fftwithshift (float2 *udata[], const int j, const int ngrid, const int nchan)
+fftwithshift (float2 *udata[], cufftHandle *plan, const int j, const int n, const int nchan)
 {
-    fftshift<<<gridsize,blocksize,0,stream[j]>>>(udata[j], ngrid, nchan);
-    cufftSafeCall(cufftExecC2C(fft_plan[j], udata[j], udata[j], CUFFT_INVERSE));
-    fftshift<<<gridsize,blocksize,0,stream[j]>>>(udata[j], ngrid, nchan);
+    fftshift<<<gridsize,blocksize,0,stream[j]>>>(udata[j], n, nchan);
+    cufftSafeCall(cufftExecC2C(*plan, udata[j], udata[j], CUFFT_INVERSE));
+    fftshift<<<gridsize,blocksize,0,stream[j]>>>(udata[j], n, nchan);
 }
 
 
@@ -215,8 +212,8 @@ coilcombinesos (float2 *img, const float2 * __restrict__ coilimg, const int nimg
 {
     for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nimg*nimg; id += blockDim.x * gridDim.x) {
         float val = 0.f;
-        for (int k = nchan*id; k < nchan*(id+1); ++k)
-            val += norm(coilimg[k]);
+        for (int c = 0; c < nchan; ++c)
+            val += norm(coilimg[nchan*id + c]);
         img[id].x = sqrtf(val);
         img[id].y = 0.f;
     }
@@ -398,6 +395,14 @@ crop (float2* dst, const int ndst, const float2* __restrict__ src, const int nsr
 }
 
 __global__ void
+copy (float2* dst, const float2* __restrict__ src, const int n)
+{
+    for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < n; id += blockDim.x * gridDim.x)
+        dst[id] = src[id];
+}
+
+
+__global__ void
 pad (float2* dst, const int ndst, const float2* __restrict__ src, const int nsrc, const int nchan)
 {
     // set whole array to zero first (not most efficient!)
@@ -567,7 +572,12 @@ tron_init()
   {
       if (MULTI_GPU) cudaSetDevice(j % ndevices);
       cuTry(cudaStreamCreate(&stream[j]));
-      fft_init(j, ngrid, nchan);
+      fft_init(&fft_plan[j], nimg, nimg, nchan);
+      cufftSafeCall(cufftSetStream(fft_plan[j], stream[j]));
+
+      fft_init(&fft_plan_os[j], ngrid, ngrid, nchan);
+      cufftSafeCall(cufftSetStream(fft_plan_os[j], stream[j]));
+
       cuTry(cudaMalloc((void **)&d_nudata[j], d_nudatasize));
       cuTry(cudaMalloc((void **)&d_udata[j], d_udatasize));
       // cuTry(cudaMemset(d_udata[j], 0, p->d_udatasize));
@@ -603,7 +613,7 @@ tron_shutdown()
 
 
 __host__ void
-recon_gar2d (float2 *h_outdata, const float2 *__restrict__ h_indata, const char command_string[])
+recon_gar2d (float2 *h_outdata, const float2 *__restrict__ h_indata)
 {
     tron_init();
 
@@ -619,58 +629,42 @@ recon_gar2d (float2 *h_outdata, const float2 *__restrict__ h_indata, const char 
 
         printf("[dev %d, stream %d] reconstructing rep %d/%d from PEs %d-%d (offset %ld)\n",
             j%ndevices, j, t+1, nrep, t*dpe, (t+1)*dpe-1, data_offset);
-
-        if (flag_input_uniform){
-            cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
-        } else {
-            cuTry(cudaMemcpyAsync(d_nudata[j], h_indata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
-        }
-
-        for (int k = 0; k < strlen(command_string); ++k)
+            
+        if (flag_adjoint)
         {
-            switch (command_string[k]) {
-            case 'a':
-                deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nimg, 1);
-                break;
-            case 'D':
-                precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nchan, nro, npe,
-                    npe_per_frame);
-                break;
-            case 'd':
-                flag_postcomp = 1;
-                break;
-            case 'g':
-                gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j],
-                    ngrid, nchan, nro, npe_per_frame, kernwidth, oversamp, peskip+peoffset, flag_postcomp, flag_golden_angle);
-                break;
-            case 'G':
-                degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_udata[j],
-                    ngrid, nchan, nro, npe, kernwidth, oversamp, peskip, flag_golden_angle);
-                break;
-            case 'F':
-            case 'f':
-                fftwithshift(d_udata, j, ngrid, nchan); // TODO: make unitary
-                break;
-            case 'c':
-                crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid,
-                    nchan);
-                break;
-            case 'w':
-                if (nchan > 1) // TODO: make nchan = 1 here work
-                    coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j],
-                        d_coilimg[j], nimg, nchan, 1); // 0 works, 1 good, 3 optimal
-                break;
-            case 's':
-                coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan);
-                break;
-            default:
-                fprintf(stderr, "unknown command character %c encountered at position %d\n", command_string[k], k);
-                return;
-            }
+            cuTry(cudaMemcpyAsync(d_nudata[j], h_indata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
+          // reverse from non-uniform data to image
+            precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nchan, nro, npe,
+                npe_per_frame);
+            gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j],
+                ngrid, nchan, nro, npe_per_frame, kernwidth, oversamp, peskip+peoffset, flag_postcomp, flag_golden_angle);
+            fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], ngrid, nchan);
+            cufftSafeCall(cufftExecC2C(fft_plan_os[j], d_udata[j], d_udata[j], CUFFT_INVERSE));
+            fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], ngrid, nchan);
+            crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nimg, d_udata[j], ngrid,
+                nchan);
+            if (nchan > 1) // TODO: make nchan = 1 here work
+                coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j],
+                    d_coilimg[j], nimg, nchan, 1); // 0 works, 1 good, 3 optimal
+                //coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan);
+            else
+                copy<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg*nimg);
+            deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nimg, 1);
+            cuTry(cudaMemcpyAsync(h_outdata + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
+        } 
+        else 
+        {  // forward from image to non-uniform data
+            cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
+            fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], nimg, nchan);
+            cufftSafeCall(cufftExecC2C(fft_plan[j], d_img[j], d_img[j], CUFFT_FORWARD));
+            fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], nimg, nchan);
+            //copy<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_img[j], nro*npe);
+            degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_img[j],
+                ngrid, nchan, nro, npe, kernwidth, oversamp, peskip, flag_golden_angle);
+            // TODO: deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_apod[j], nimg, 1);
+            cuTry(cudaMemcpyAsync(h_outdata + nchan*nro*npe*t, d_nudata[j], d_nudatasize, cudaMemcpyDeviceToHost, stream[j]));
         }
 
-
-        cuTry(cudaMemcpyAsync(h_outdata + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
     }
 
     tron_shutdown();
@@ -680,7 +674,6 @@ recon_gar2d (float2 *h_outdata, const float2 *__restrict__ h_indata, const char 
 
 
 }
-
 
 void
 print_usage()
@@ -702,7 +695,6 @@ print_usage()
     fprintf(stderr, "\t\t\t\t  f\tinverse FFT\n");
     fprintf(stderr, "\t\t\t\t  w\tWalsh adaptive coil combine\n");
     fprintf(stderr, "\t\t\t\t  s\terrorsum-of-squares coil combine\n");
-    fprintf(stderr, "\t\t\t\t(default is %s)\n", default_nufft_adj);
     fprintf(stderr, "\t-s peskip\t\tnumber of initial phase encodes to skip\n");
     fprintf(stderr, "\t-u\t\tinput data is uniform\n");
 
@@ -717,10 +709,9 @@ main (int argc, char *argv[])
     ra_t ra_in, ra_out;
     int c, index;
     char infile[1024], outfile[1024];
-    strncpy(recon_commands, default_nufft_adj, MAX_RECON_CMDS);
 
     opterr = 0;
-    while ((c = getopt (argc, argv, "d:ghk:o:r:s:u")) != -1)
+    while ((c = getopt (argc, argv, "ad:ghk:o:r:s:u")) != -1)
     {
         switch (c) {
             case 'd':
@@ -741,8 +732,8 @@ main (int argc, char *argv[])
             case 'h':
                 print_usage();
                 return 1;
-            case 'r':
-                strncpy(recon_commands, optarg, MAX_RECON_CMDS);
+            case 'a':
+                flag_adjoint = 1;
                 break;
             case 'u':
                 flag_input_uniform = 1;
@@ -770,7 +761,6 @@ main (int argc, char *argv[])
     printf("Oversampling factor set to %.3f.\n", oversamp);
     printf("Infile: %s\n", infile);
     printf("Outfile: %s\n", outfile);
-    printf("Command: %s\n", recon_commands);
 
     printf("reading %s\n", infile);
     ra_read(&ra_in, infile);
@@ -779,18 +769,11 @@ main (int argc, char *argv[])
     printf("dims = {%lud, %lud, %lud, %lud}\n", ra_in.dims[0],
         ra_in.dims[1], ra_in.dims[2], ra_in.dims[3]);
 
-    // figure out if we are gridding or degridding first
-    char *gridloc = strchr(recon_commands, 'g');
-    char *degridloc = strchr(recon_commands, 'G');
-    if (gridloc == NULL && degridloc == NULL) {
-        fprintf(stderr, "Neither a gridding nor degridding command was specified!\n");
-        return 1;
-    }
-
+    
     clock_t start = clock();
 
 
-    if (gridloc < degridloc || degridloc == NULL) {  // gridding first, reading non-uniform data
+    if (flag_adjoint) {  // gridding first, reading non-uniform data
         flag_input_uniform = 0;
         nchan = ra_in.dims[0];
         nrep = ra_in.dims[1];
@@ -803,7 +786,7 @@ main (int argc, char *argv[])
         nz = 1;
         h_outdatasize = nrep*nimg*nimg*nz*sizeof(float2);
     }
-    else if (degridloc < gridloc || gridloc == NULL)
+    else
     { // de-gridding first, reading Cartesian
         flag_input_uniform = 1;
         nchan = ra_in.dims[0];
@@ -836,7 +819,7 @@ main (int argc, char *argv[])
 
 
     // the magic happens
-    recon_gar2d(h_outdata, h_indata, recon_commands);
+    recon_gar2d(h_outdata, h_indata);
 
 
     //nufft_gar2d(h_outdata, h_indata, recon_commands);
