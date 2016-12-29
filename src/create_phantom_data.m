@@ -48,12 +48,12 @@ for pe = 1:npe
     end
 end
 
-figure(2);
-imagesc(w)
-xlabel('phase encode');
-ylabel('readout');
-title('sample weights');
-colorbar;
+% figure(2);
+% imagesc(w)
+% xlabel('phase encode');
+% ylabel('readout');
+% title('sample weights');
+% colorbar;
 
 
 %%
@@ -62,23 +62,44 @@ K = reshape(traj(1:2,:,:), 2, []).';
 st = nufft_init(K, [N N], wg*[2 2], osf*[N N], [N/2 N/2]);
 data = nufft(image, st);
 data = reshape(data, nro, npe) / nro / npe;
+data2 = zeros(1,1,nro,npe);
+data2(1,1,:,:) = data;
+rawrite(single(data2), 'sl_data_irt.ra');
+clear data2;
 data = data .* w;
-image_irt = real(nufft_adj(data(:), st));
+image_irt_irt = real(nufft_adj(data(:), st));
 
-figure(1);
-subplot(221);
-imagesc(image);
-title('truth');
+% figure(1);
+% subplot(331);
+% imagesc(image);
+% title('truth');
+% colorbar;
 
-subplot(222);
-imagesc(image_irt);
+subplot(331);
+imagesc(image_irt_irt);
 colormap(gray);
-title('IRT');
+title('IRT-IRT');
 colorbar;
 
-nrmse_irt = norm(image_irt - image) / N / N;
+image_irt_tron = abs(squeeze(raread('sl_irt_tron.ra')));
+subplot(332);
+imagesc(image_irt_tron);
+colormap(gray);
+title('IRT-TRON');
+colorbar;
 
-fprintf('IRT      nmrse: %g\n', nrmse_irt);
+image_tron_tron = abs(squeeze(raread('sl_tron_tron.ra')));
+subplot(333);
+imagesc(image_tron_tron);
+colormap(gray);
+title('TRON-TRON');
+colorbar;
+
+nrmse_irt_irt = norm(image_irt_irt - image) / N / N;
+%nrmse_irt_tron = norm(image_irt_tron - image) / N / N;
+
+fprintf('IRT-IRT      nmrse: %g\n', nrmse_irt_irt);
+%fprintf('IRT-TRON     nmrse: %g\n', nrmse_irt_tron);
 % IRT nmrse: 0.0010093
 
 %% gpuNUFFT

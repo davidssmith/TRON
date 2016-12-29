@@ -68,13 +68,13 @@ int flag_golden_angle = 0;
 // uniform data shape:     nchan x nrep x ngrid x ngrid x nz
 // image shape:            nchan x nrep x nimg x nimg x nz
 // coil-combined image:            nrep x nimg x nimg x nz
-int nchan;
-int nrep;  // # of repeated measurements of same trajectory
-int nro;
-int npe;
-int ngrid;
-int nx, ny, nz;
-int nimg;
+int nchan = 0;
+int nrep = 0;  // # of repeated measurements of same trajectory
+int nro = 0;
+int npe = 0;
+int ngrid = 0;
+int nx = 0, ny = 0, nz = 0;
+int nimg = 0;
 
 float oversamp = 2.f;  // TODO: compute ngrid from nx, ny and oversamp
 float kernwidth = 2.f;
@@ -531,7 +531,7 @@ degridradial2d (
         float kx = r*cos(t); // [-0.5,0.5-1/nro] Cartesian freqs of non-Cart datum  // TODO: _sincosf?
         float ky = r*sin(t); // [-0.5,0.5-1/nro]
         float x = nimg*(kx + 0.5);  // [0,ngrid] (x,y) coordinates in grid units
-        float y = nimg*(ky + 0.5);
+        float y = nimg*(0.5 - ky);
 
         for (int ch = 0; ch < nchan; ++ch) // zero my elements
              nudata[nchan*id + ch] = make_float2(0.f, 0.f);
@@ -686,6 +686,8 @@ print_usage()
     fprintf(stderr, "\t-h\t\t\tshow this help\n");
     fprintf(stderr, "\t-k width\t\twidth of gridding kernel\n");
     fprintf(stderr, "\t-o oversamp\t\tgrid oversampling factor\n");
+    fprintf(stderr, "\t-p npe\t\tnumber of phase encodes per image\n");
+    fprintf(stderr, "\t-r nro\t\tnumber of readout points\n");
     fprintf(stderr, "\t-s peskip\t\tnumber of initial phase encodes to skip\n");
     fprintf(stderr, "\t-u\t\t\tinput data is uniform (not implemented yet)\n");
 
@@ -702,20 +704,14 @@ main (int argc, char *argv[])
     char infile[1024], outfile[1024];
 
     opterr = 0;
-    while ((c = getopt (argc, argv, "ad:ghk:o:r:s:u")) != -1)
+    while ((c = getopt (argc, argv, "ad:ghk:o:p:r:s:u")) != -1)
     {
         switch (c) {
+            case 'a':
+                flag_adjoint = 1;
+                break;
             case 'd':
                 dpe = atoi(optarg);
-                break;
-            case 'o':
-                oversamp = atof(optarg);
-                break;
-            case 's':
-                peskip = atoi(optarg);
-                break;
-            case 'k':
-                kernwidth = atof(optarg);
                 break;
             case 'g':
                 flag_golden_angle = 1;
@@ -723,8 +719,20 @@ main (int argc, char *argv[])
             case 'h':
                 print_usage();
                 return 1;
-            case 'a':
-                flag_adjoint = 1;
+            case 'k':
+                kernwidth = atof(optarg);
+                break;
+            case 'o':
+                oversamp = atof(optarg);
+                break;
+            case 'p':
+                npe = atoi(optarg);
+                break;
+            case 'r':
+                nro = atoi(optarg);
+                break;
+            case 's':
+                peskip = atoi(optarg);
                 break;
             case 'u':
                 flag_input_uniform = 1;
@@ -775,6 +783,8 @@ main (int argc, char *argv[])
         nimg = nro;
         nrep = 1; //(npe - npe_per_frame) / dpe;
         nz = 1;
+        printf("nchan=%d\nnrep=%d\nnro=%d\nnpe=%d\nngrid=%d\nnimg=%d\n", nchan, nrep, nro, npe, ngrid, nimg);
+
         h_outdatasize = nrep*nimg*nimg*nz*sizeof(float2);
     }
     else
@@ -786,7 +796,7 @@ main (int argc, char *argv[])
         ny = ra_in.dims[3];
         printf("nchan=%d\nnrep=%d\nnx=%d\nny=%d\n", nchan, nrep, nx ,ny);
         nimg = nx;  // TODO: implement non-square images
-        nro = nimg;
+        nro = 2*nimg;
         oversamp = 1.f;
         ngrid = nimg*oversamp;
         npe_per_frame = nro;
