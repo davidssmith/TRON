@@ -469,7 +469,7 @@ const int peskip, const int flag_postcomp, const int flag_golden_angle)
         // for diff acquisitions
         for (int pe = 0; pe < npe; ++pe)
         {
-            float profile_theta = flag_golden_angle ? modang(PHI * float(pe + peskip)) : float(pe) * M_PI / float(npe);
+            float profile_theta = flag_golden_angle ? modang(PHI * float(pe + peskip)) : float(pe) * M_PI / float(npe) + M_PI/2;
             //float dtheta1 = fabsf(modang(profile_theta - gridpoint_theta));
             //float dtheta2 = fabsf(modang(profile_theta + M_PI) - gridpoint_theta);
             //float dtheta1 = fabsf(profile_theta - gridpoint_theta);
@@ -527,7 +527,7 @@ degridradial2d (
         int pe = id / nro; // find my location in the non-uniform data
         int ro = id % nro;
         float r = (ro - 0.5f * nro )/ (float)(nro); // [-0.5,0.5-1/nro] convert indices to (r,theta) coordinates
-        float t = flag_golden_angle ? modang(PHI*(pe + peskip)) : float(pe) * M_PI / float(npe);
+        float t = flag_golden_angle ? modang(PHI*(pe + peskip)) : float(pe) * M_PI / float(npe)+ M_PI/2;
         float kx = r*cos(t); // [-0.5,0.5-1/nro] Cartesian freqs of non-Cart datum  // TODO: _sincosf?
         float ky = r*sin(t); // [-0.5,0.5-1/nro]
         float x = nimg*(kx + 0.5);  // [0,ngrid] (x,y) coordinates in grid units

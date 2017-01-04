@@ -69,6 +69,11 @@ clear data2;
 data = data .* w;
 image_irt_irt = real(nufft_adj(data(:), st));
 
+data_tron = squeeze(raread('sl_data_tron.ra'));
+data_tron = data_tron .* w / nro / npe;
+image_tron_irt = imag(nufft_adj(data_tron(:), st));
+
+
 % figure(1);
 % subplot(331);
 % imagesc(image);
@@ -86,6 +91,17 @@ subplot(332);
 imagesc(image_irt_tron);
 colormap(gray);
 title('IRT-TRON');
+colorbar;
+
+subplot(334);
+imagesc(log(abs(data_tron)));
+colormap('default');
+
+image_irt_tron = abs(squeeze(raread('sl_irt_tron.ra')));
+subplot(335);
+imagesc(image_tron_irt);
+colormap(gray);
+title('TRON-IRT');
 colorbar;
 
 image_tron_tron = abs(squeeze(raread('sl_tron_tron.ra')));
