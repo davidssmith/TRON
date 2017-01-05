@@ -450,8 +450,8 @@ const int peskip, const int flag_postcomp, const int flag_golden_angle)
         int x = zid / blocksizey + blocksizex*bx;
         int y = zid % blocksizey + blocksizey*by;
         int id = x*ngrid + y; // computed linear array index for uniform data
-        x -= ngrid/2;
-        y = -y + ngrid/2;
+        x = -x + ngrid/2;
+        y -= ngrid/2;
         float gridpoint_radius = hypotf(float(x), float(y));
         int rmax = fminf(floorf(gridpoint_radius + kernwidth)/oversamp, nro/2-1);
         int rmin = fmaxf(ceilf(gridpoint_radius - kernwidth)/oversamp, 0);  // define a circular band around the uniform point
@@ -530,8 +530,8 @@ degridradial2d (
         float t = flag_golden_angle ? modang(PHI*(pe + peskip)) : float(pe) * M_PI / float(npe)+ M_PI/2;
         float kx = r*cos(t); // [-0.5,0.5-1/nro] Cartesian freqs of non-Cart datum  // TODO: _sincosf?
         float ky = r*sin(t); // [-0.5,0.5-1/nro]
-        float x = nimg*(kx + 0.5);  // [0,ngrid] (x,y) coordinates in grid units
-        float y = nimg*(0.5 - ky);
+        float x = nimg*(0.5 - kx);  // [0,ngrid] (x,y) coordinates in grid units
+        float y = nimg*(ky + 0.5);
 
         for (int ch = 0; ch < nchan; ++ch) // zero my elements
              nudata[nchan*id + ch] = make_float2(0.f, 0.f);
@@ -540,7 +540,7 @@ degridradial2d (
         {
             float wgt = degridkernel(ux - x, uy - y, kernwidth, oversamp);
             for (int ch = 0; ch < nchan; ++ch) {
-                float2 c = udata[nchan*(ux*nimg + uy) + ch];
+                float2 c = udata[nchan*(ux*nimg + uy) + ch] / (nro*npe*kernwidth*kernwidth); // TODO: check this
                 nudata[nchan*id + ch].x += wgt*c.x;
                 nudata[nchan*id + ch].y += wgt*c.y;
             }
@@ -630,7 +630,7 @@ recon_gar2d (float2 *h_outdata, const float2 *__restrict__ h_indata)
 
         printf("[dev %d, stream %d] reconstructing rep %d/%d from PEs %d-%d (offset %ld)\n",
             j%ndevices, j, t+1, nrep, t*dpe, (t+1)*dpe-1, data_offset);
-            
+
         if (flag_adjoint)
         {
             cuTry(cudaMemcpyAsync(d_nudata[j], h_indata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
@@ -652,8 +652,8 @@ recon_gar2d (float2 *h_outdata, const float2 *__restrict__ h_indata)
                 copy<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg*nimg);
             deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nimg, 1);
             cuTry(cudaMemcpyAsync(h_outdata + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
-        } 
-        else 
+        }
+        else
         {  // forward from image to non-uniform data
             cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
             fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], nimg, nchan);
@@ -768,7 +768,7 @@ main (int argc, char *argv[])
     printf("dims = {%lud, %lud, %lud, %lud}\n", ra_in.dims[0],
         ra_in.dims[1], ra_in.dims[2], ra_in.dims[3]);
 
-    
+
     clock_t start = clock();
 
 
@@ -780,7 +780,7 @@ main (int argc, char *argv[])
         npe = ra_in.dims[3];
         ngrid = nro*oversamp;
         npe_per_frame = nro;
-        nimg = nro;
+        nimg = nro/2;
         nrep = 1; //(npe - npe_per_frame) / dpe;
         nz = 1;
         printf("nchan=%d\nnrep=%d\nnro=%d\nnpe=%d\nngrid=%d\nnimg=%d\n", nchan, nrep, nro, npe, ngrid, nimg);
@@ -838,7 +838,7 @@ main (int argc, char *argv[])
     ra_out.size = h_outdatasize;
     ra_out.ndims = 4;
     ra_out.dims = (uint64_t*)malloc(4*sizeof(uint64_t));
-    
+
     if (flag_adjoint) {  // gridding first, reading non-uniform data
 
       ra_out.dims[0] = 1;

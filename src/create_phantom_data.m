@@ -70,7 +70,7 @@ data = data .* w;
 image_irt_irt = real(nufft_adj(data(:), st));
 
 data_tron = squeeze(raread('sl_data_tron.ra'));
-data_tron = data_tron .* w / nro / npe;
+data_tron = data_tron .* w;
 image_tron_irt = imag(nufft_adj(data_tron(:), st));
 
 
