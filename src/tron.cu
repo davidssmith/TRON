@@ -366,6 +366,17 @@ deapodize (float2 *img, const float2 * __restrict__ apod, const int nimg, const 
             img[nchan*id+c] *= apod[id].x; // took magnitude prior
 }
 
+__device__ float
+degrid_deapodize (const float r, const int ngrid, const float kernwidth, const float oversamp)
+{
+#define SQR(x) ((x)*(x))
+#define BETA (M_PI*sqrtf(SQR(kernwidth/oversamp*(oversamp-0.5))-0.8))
+    float a = M_PI*kernwidth*r/float(ngrid);
+    float y = sqrtf(a*a - BETA*BETA);
+    float w = sinf(y) / y;
+    return w == 0.f ? 1.f : w;
+}
+
 
 __global__ void
 precompensate (float2 *nudata, const int nchan, const int nro, const int npe, const int nrest)
@@ -545,6 +556,8 @@ degridradial2d (
                 nudata[nchan*id + ch].y += wgt*c.y;
             }
         }
+        for (int ch = 0; ch < nchan; ++ch)
+            nudata[nchan*id + ch].x = 1.f / degrid_deapodize(r*nro, nimg, kernwidth, oversamp);
     }
 }
 
@@ -662,7 +675,7 @@ recon_gar2d (float2 *h_outdata, const float2 *__restrict__ h_indata)
             //copy<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_img[j], nimg*nimg);
             degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_img[j],
                 nimg, nchan, nro, npe, kernwidth, oversamp, peskip, flag_golden_angle);
-            // TODO?: deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_apod[j], nimg, 1);
+            //deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_apod[j], nimg, 1);
             cuTry(cudaMemcpyAsync(h_outdata + nchan*nro*npe*t, d_nudata[j], d_nudatasize, cudaMemcpyDeviceToHost, stream[j]));
         }
 

@@ -105,7 +105,7 @@ title('TRON-IRT');
 colorbar;
 
 image_tron_tron = abs(squeeze(raread('sl_tron_tron.ra')));
-subplot(333);
+subplot(333)
 imagesc(image_tron_tron);
 colormap(gray);
 title('TRON-TRON');
