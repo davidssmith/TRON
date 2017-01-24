@@ -366,16 +366,38 @@ deapodize (float2 *img, const float2 * __restrict__ apod, const int nimg, const 
             img[nchan*id+c] *= apod[id].x; // took magnitude prior
 }
 
-__device__ float
-degrid_deapodize (const float r, const int ngrid, const float kernwidth, const float oversamp)
+__global__ void
+degrid_deapodize (float2 *img, const int nimg, const int nchan, 
+    float kernwidth, float oversamp)
 {
-#define SQR(x) ((x)*(x))
-#define BETA (M_PI*sqrtf(SQR(kernwidth/oversamp*(oversamp-0.5))-0.8))
-    float a = M_PI*kernwidth*r/float(ngrid);
-    float y = sqrtf(a*a - BETA*BETA);
-    float w = sinf(y) / y;
-    return w == 0.f ? 1.f : w;
+    oversamp = 1.f;
+    kernwidth = 1.f;
+    float beta = kernwidth*(oversamp-0.5)/oversamp;
+    beta = M_PI*sqrtf(beta*beta - 0.8);
+    for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nimg*nimg; id += blockDim.x * gridDim.x)
+    {
+        int y = id % nimg - nimg/2;
+        int x = id / nimg - nimg/2;
+        float r = sqrtf(x*x + y*y);
+        float d = M_PI*kernwidth*r/nimg;
+        float s = d > beta ? sqrtf(d*d - beta*beta) : 1.f;
+        float f = s != 0.f ? sinf(s) / s : 1.f;
+        for (int c = 0; c < nchan; ++c)
+            img[nchan*id+c] /= f;
+    }
 }
+
+
+//__device__ float
+//degrid_deapodize (const float r, const int ngrid, const float kernwidth, const float oversamp)
+//{
+//#define SQR(x) ((x)*(x))
+//#define BETA (M_PI*sqrtf(SQR(kernwidth/oversamp*(oversamp-0.5))-0.8))
+    //float a = M_PI*kernwidth*r/float(ngrid);
+    //float y = sqrtf(a*a - BETA*BETA);
+    //float w = sinf(y) / y;
+    //return w == 0.f ? 1.f : w;
+//}
 
 
 __global__ void
@@ -556,8 +578,6 @@ degridradial2d (
                 nudata[nchan*id + ch].y += wgt*c.y;
             }
         }
-        for (int ch = 0; ch < nchan; ++ch)
-            nudata[nchan*id + ch].x = 1.f / degrid_deapodize(r*nro, nimg, kernwidth, oversamp);
     }
 }
 
@@ -669,13 +689,14 @@ recon_gar2d (float2 *h_outdata, const float2 *__restrict__ h_indata)
         else
         {  // forward from image to non-uniform data
             cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
+            degrid_deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], nimg,
+            1, kernwidth, oversamp );
             fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], nimg, nchan);
             cufftSafeCall(cufftExecC2C(fft_plan[j], d_img[j], d_img[j], CUFFT_FORWARD));
             fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], nimg, nchan);
             //copy<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_img[j], nimg*nimg);
             degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_img[j],
                 nimg, nchan, nro, npe, kernwidth, oversamp, peskip, flag_golden_angle);
-            //deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_apod[j], nimg, 1);
             cuTry(cudaMemcpyAsync(h_outdata + nchan*nro*npe*t, d_nudata[j], d_nudatasize, cudaMemcpyDeviceToHost, stream[j]));
         }
 
