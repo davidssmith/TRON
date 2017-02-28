@@ -42,7 +42,7 @@
 
 // CONFIGURATION PARAMETERS
 #define NSTREAMS        2
-#define MULTI_GPU       1
+#define MULTI_GPU       0
 #define NCHAN           6
 #define MAXCHAN         16
 #define MAX_RECON_CMDS  20
@@ -50,40 +50,71 @@ const int blocksize = 96;    // CUDA kernel parameters, TWEAK HERE to optimize
 const int gridsize = 2048;
 
 // GLOBAL VARIABLES
-float2 *d_nudata[NSTREAMS], *d_udata[NSTREAMS], *d_coilimg[NSTREAMS],
+static float2 *d_nudata[NSTREAMS], *d_udata[NSTREAMS], *d_coilimg[NSTREAMS],
     *d_img[NSTREAMS], *d_b1[NSTREAMS], *d_apodos[NSTREAMS], *d_apod[NSTREAMS];
-cufftHandle fft_plan[NSTREAMS], fft_plan_os[NSTREAMS];
-cudaStream_t stream[NSTREAMS];
-int ndevices;
-int npe_per_frame;
-int dpe = 21;
-int peskip = 0;
-int flag_adjoint = 0;
-int flag_postcomp = 0;
-int flag_deapodize = 1;
-int flag_input_uniform;
-int flag_golden_angle = 0;
+static cufftHandle fft_plan[NSTREAMS], fft_plan_os[NSTREAMS];
+static cudaStream_t stream[NSTREAMS];
+static int ndevices;
+
+static size_t d_nudatasize; // size in bytes of non-uniform data
+static size_t d_udatasize; // size in bytes of gridded data
+static size_t d_coilimgsize; // multi-coil image size
+static size_t d_imgsize; // coil-combined image size
+static size_t d_gridsize;
+static size_t h_outdatasize;
+
+
 
 // non-uniform data shape: nchan x nrep x nro x npe
 // uniform data shape:     nchan x nrep x ngrid x ngrid x nz
 // image shape:            nchan x nrep x nimg x nimg x nz
 // coil-combined image:            nrep x nimg x nimg x nz
-int nchan = 0;
-int nrep = 0;  // # of repeated measurements of same trajectory
-int nro = 0;
-int npe = 0;
-int ngrid = 0;
-int nx = 0, ny = 0, nz = 0;
-int nimg = 0;
 
-float oversamp = 2.f;  // TODO: compute ngrid from nx, ny and oversamp
-float kernwidth = 2.f;
-size_t d_nudatasize; // size in bytes of non-uniform data
-size_t d_udatasize; // size in bytes of gridded data
-size_t d_coilimgsize; // multi-coil image size
-size_t d_imgsize; // coil-combined image size
-size_t d_gridsize;
-size_t h_outdatasize;
+
+typedef struct {
+  int dpe;
+  int peskip;
+  int nchan;
+  int nrep;  // # of repeated measurements of same trajectory
+  int nro;
+  int npe;
+  int ngrid;
+  int nx, ny, nz;
+  int nimg;
+  int npe_per_frame;
+  float oversamp;  // TODO: compute ngrid from nx, ny and oversamp
+  float kernwidth;
+  int flag_adjoint;
+  int flag_postcomp;
+  int flag_deapodize;
+  int flag_input_uniform;
+  int flag_golden_angle;
+} TRON_plan;
+
+
+void
+TRON_set_default_plan (TRON_plan *p)
+{
+    p->dpe = 21;
+    p->peskip = 0;
+    p->nchan = 0;
+    p->nrep = 0;  // # of repeated measurements of same trajectory
+    p->nro = 0;
+    p->npe = 0;
+    p->ngrid = 0;
+    p->nx = 0;
+    p->ny = 0;
+    p->nz = 0;
+    p->nimg = 0;
+    p->npe_per_frame = 0;
+    p->oversamp = 2.f;
+    p->kernwidth = 2.f;
+    p->flag_adjoint = 0;
+    p->flag_postcomp = 0;
+    p->flag_deapodize = 1;
+    p->flag_input_uniform = 0;
+    p->flag_golden_angle = 0;
+}
 
 // CONSTANTS
 const float PHI = 1.9416089796736116f;
@@ -98,7 +129,8 @@ gpuAssert (cudaError_t code, const char *file, int line, bool abort=true)
 }
 #define cuTry(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 
-static const char *_cudaGetErrorEnum(cufftResult error)
+static const char *
+_cudaGetErrorEnum(cufftResult error)
 {
     switch (error) {
         case CUFFT_SUCCESS: return "CUFFT_SUCCESS";
@@ -115,7 +147,7 @@ static const char *_cudaGetErrorEnum(cufftResult error)
     }
 }
 
-#define cufftSafeCall(err)      __cufftSafeCall(err, __FILE__, __LINE__)
+#define cufftSafeCall(err)  __cufftSafeCall(err, __FILE__, __LINE__)
 inline void __cufftSafeCall (cufftResult err, const char *file, const int line)
 {
     if (CUFFT_SUCCESS != err) {
@@ -367,7 +399,7 @@ deapodize (float2 *img, const float2 * __restrict__ apod, const int nimg, const 
 }
 
 __global__ void
-degrid_deapodize (float2 *img, const int nimg, const int nchan, 
+degrid_deapodize (float2 *img, const int nimg, const int nchan,
     float kernwidth, float oversamp)
 {
     oversamp = 1.f;
@@ -529,9 +561,11 @@ const int peskip, const int flag_postcomp, const int flag_golden_angle)
                     float wgt = gridkernel(kx - x, ky - y, kernwidth, oversamp);
                     if (flag_postcomp)
                       sdc += wgt;
-                    for (int ch = 0; ch < nchan; ch += 2) { // unrolled by 2 'cuz faster
-                        utmp[ch] += wgt*nudata[nchan*(nro*pe + r + nro/2) + ch];
-                        utmp[ch + 1] += wgt*nudata[nchan*(nro*pe + r + nro/2) + ch + 1];
+                    for (int ch = 0; ch < nchan; ch++) { // unrolled by 2 'cuz faster
+                        //utmp[ch] += wgt*nudata[nchan*(nro*pe + r + nro/2) + ch];
+                        //utmp[ch + 1] += wgt*nudata[nchan*(nro*pe + r + nro/2) + ch + 1];
+                        utmp[ch].x = __fmaf_rn(wgt,nudata[nchan*(nro*pe + r + nro/2) + ch].x, utmp[ch].x);
+                        utmp[ch].y = __fmaf_rn(wgt,nudata[nchan*(nro*pe + r + nro/2) + ch].y, utmp[ch].y);
                     }
                 }
             }
@@ -688,6 +722,7 @@ recon_gar2d (float2 *h_outdata, const float2 *__restrict__ h_indata)
         }
         else
         {  // forward from image to non-uniform data
+            printf("ngrid = %d\n", ngrid);
             cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
             degrid_deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], nimg,
             1, kernwidth, oversamp );
@@ -720,8 +755,8 @@ print_usage()
     fprintf(stderr, "\t-h\t\t\tshow this help\n");
     fprintf(stderr, "\t-k width\t\twidth of gridding kernel\n");
     fprintf(stderr, "\t-o oversamp\t\tgrid oversampling factor\n");
-    fprintf(stderr, "\t-p npe\t\tnumber of phase encodes per image\n");
-    fprintf(stderr, "\t-r nro\t\tnumber of readout points\n");
+    fprintf(stderr, "\t-p npe\t\t\tnumber of phase encodes per image\n");
+    fprintf(stderr, "\t-r nro\t\t\tnumber of readout points\n");
     fprintf(stderr, "\t-s peskip\t\tnumber of initial phase encodes to skip\n");
     fprintf(stderr, "\t-u\t\t\tinput data is uniform (not implemented yet)\n");
 
@@ -812,11 +847,11 @@ main (int argc, char *argv[])
         nrep = ra_in.dims[1];
         nro = ra_in.dims[2];
         npe = ra_in.dims[3];
-        ngrid = nro*oversamp;
-        npe_per_frame = nro;
-        nimg = nro/2;
-        nrep = 1; //(npe - npe_per_frame) / dpe;
-        nz = 1;
+        if (ngrid == 0.f) ngrid = nro*oversamp;
+        if (npe_per_frame == 0.f) npe_per_frame = nro;
+        if (nimg == 0.f) nimg = nro/2;
+        if (nrep == 0.f) nrep = (npe - npe_per_frame) / dpe;
+        if (nz ==0) nz = 1; //(npe - npe_per_frame) / dpe;
         printf("nchan=%d\nnrep=%d\nnro=%d\nnpe=%d\nngrid=%d\nnimg=%d\n", nchan, nrep, nro, npe, ngrid, nimg);
 
         h_outdatasize = nrep*nimg*nimg*nz*sizeof(float2);
@@ -850,9 +885,6 @@ main (int argc, char *argv[])
     //h_indata = (float2*)malloc(nchan*nro*npe*sizeof(float2));
     h_outdata = (float2*)malloc(h_outdatasize);
 #endif
-
-
-
 
 
     // the magic happens

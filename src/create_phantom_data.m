@@ -111,6 +111,9 @@ colormap(gray);
 title('TRON-TRON');
 colorbar;
 
+subplot(336);
+plot(image_tron_tron(N/2,:));
+
 nrmse_irt_irt = norm(image_irt_irt - image) / N / N;
 %nrmse_irt_tron = norm(image_irt_tron - image) / N / N;
 
