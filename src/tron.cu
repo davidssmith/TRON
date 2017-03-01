@@ -681,7 +681,7 @@ tron_shutdown()
 
 
 __host__ void
-recon_gar2d (float2 *h_outdata, const float2 *__restrict__ h_indata)
+recon_gar2d (float2 *h_outdata, const float2 *__restrict__ h_indata, TRON_plan *p)
 {
     tron_init();
 
@@ -771,6 +771,7 @@ main (int argc, char *argv[])
     ra_t ra_in, ra_out;
     int c, index;
     char infile[1024], outfile[1024];
+    TRON_plan p;
 
     opterr = 0;
     while ((c = getopt (argc, argv, "ad:ghk:o:p:r:s:u")) != -1)
@@ -888,7 +889,7 @@ main (int argc, char *argv[])
 
 
     // the magic happens
-    recon_gar2d(h_outdata, h_indata);
+    recon_gar2d(h_outdata, h_indata, &p);
 
 
     //nufft_gar2d(h_outdata, h_indata, recon_commands);
