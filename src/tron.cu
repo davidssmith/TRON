@@ -78,7 +78,8 @@ typedef struct {
     float kernwidth;
     float acq_undersamp;
 
-    dim_t data_dims;
+    dim_t udata_dims;    // udata and image are redundant... TODO: merge these
+    dim_t nudata_dims;
     dim_t image_dims;
 
     int nchan;  // p->dims.c;
@@ -112,19 +113,34 @@ typedef struct {
 void
 TRON_set_default_plan (TRON_plan *p)
 {
-    p->dpe = 21;
-    p->peskip = 0;
     p->nchan = 0;
     p->nrep = 0;  // # of repeated measurements of same trajectory
     p->nro = 0;
     p->npe = 0;
     p->ngrid = 0;
+
     p->nx = 0;
     p->ny = 0;
     p->nz = 0;
+
+    p->data_dims.c = 0;
+    p->data_dims.t = 0;
+    p->data_dims.x = 0;
+    p->data_dims.y = 0;
+    p->data_dims.z = 0;
+    p->image_dims.c = 0;
+    p->image_dims.t = 0;
+    p->image_dims.x = 0;
+    p->image_dims.y = 0;
+    p->image_dims.z = 0;
+
+    p->dpe = 0;
+    p->peskip = 0;
+
     p->nimg = 0;
     p->npe_per_frame = 0;
     p->grid_oversamp = 2.f;
+    p->acq_undersamp = 1.f;
     p->kernwidth = 2.f;
     p->flags.adjoint = 0;
     p->flags.postcomp = 0;
