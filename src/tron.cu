@@ -72,23 +72,23 @@ static size_t h_outdatasize;
 
 
 typedef struct {
-  int dpe;
-  int peskip;
-  int nchan;
-  int nrep;  // # of repeated measurements of same trajectory
-  int nro;
-  int npe;
-  int ngrid;
-  int nx, ny, nz;
-  int nimg;
-  int npe_per_frame;
-  float oversamp;  // TODO: compute ngrid from nx, ny and oversamp
-  float kernwidth;
-  int flag_adjoint;
-  int flag_postcomp;
-  int flag_deapodize;
-  int flag_input_uniform;
-  int flag_golden_angle;
+    int dpe;
+    int peskip;
+    int nchan;
+    int nrep;  // # of repeated measurements of same trajectory
+    int nro;
+    int npe;
+    int ngrid;
+    int nx, ny, nz;
+    int nimg;
+    int npe_per_frame;
+    float oversamp;  // TODO: compute ngrid from nx, ny and oversamp
+    float kernwidth;
+    int flag_adjoint;
+    int flag_postcomp;
+    int flag_deapodize;
+    int flag_input_uniform;
+    int flag_golden_angle;
 } TRON_plan;
 
 
@@ -771,41 +771,43 @@ main (int argc, char *argv[])
     ra_t ra_in, ra_out;
     int c, index;
     char infile[1024], outfile[1024];
+
     TRON_plan p;
+    TRON_set_default_plan(&p);
 
     opterr = 0;
     while ((c = getopt (argc, argv, "ad:ghk:o:p:r:s:u")) != -1)
     {
         switch (c) {
             case 'a':
-                flag_adjoint = 1;
+                p.flag_adjoint = 1;
                 break;
             case 'd':
-                dpe = atoi(optarg);
+                p.dpe = atoi(optarg);
                 break;
             case 'g':
-                flag_golden_angle = 1;
+                p.flag_golden_angle = 1;
                 break;
             case 'h':
                 print_usage();
                 return 1;
             case 'k':
-                kernwidth = atof(optarg);
+                p.kernwidth = atof(optarg);
                 break;
             case 'o':
-                oversamp = atof(optarg);
+                p.oversamp = atof(optarg);
                 break;
             case 'p':
-                npe = atoi(optarg);
+                p.npe = atoi(optarg);
                 break;
             case 'r':
-                nro = atoi(optarg);
+                p.nro = atoi(optarg);
                 break;
             case 's':
-                peskip = atoi(optarg);
+                p.peskip = atoi(optarg);
                 break;
             case 'u':
-                flag_input_uniform = 1;
+                p.flag_input_uniform = 1;
                 break;
             default:
                 print_usage();
@@ -824,10 +826,10 @@ main (int argc, char *argv[])
       else if (index == optind + 1)
         snprintf(outfile, 1024, "%s", argv[index]);
     }
-    printf("Skipping first %d PEs.\n", peskip);
-    printf("PE spacing set to %d.\n", dpe);
-    printf("Kernel width set to %.1f.\n", kernwidth);
-    printf("Oversampling factor set to %.3f.\n", oversamp);
+    printf("Skipping first %d PEs.\n", p.peskip);
+    printf("PE spacing set to %d.\n", p.dpe);
+    printf("Kernel width set to %.1f.\n", p.kernwidth);
+    printf("Oversampling factor set to %.3f.\n", p.oversamp);
     printf("Infile: %s\n", infile);
     printf("Outfile: %s\n", outfile);
 
@@ -842,40 +844,40 @@ main (int argc, char *argv[])
     clock_t start = clock();
 
 
-    if (flag_adjoint) {  // gridding first, reading non-uniform data
-        flag_input_uniform = 0;
-        nchan = ra_in.dims[0];
-        nrep = ra_in.dims[1];
-        nro = ra_in.dims[2];
-        npe = ra_in.dims[3];
-        if (ngrid == 0.f) ngrid = nro*oversamp;
-        if (npe_per_frame == 0.f) npe_per_frame = nro;
-        if (nimg == 0.f) nimg = nro/2;
-        if (nrep == 0.f) nrep = (npe - npe_per_frame) / dpe;
-        if (nz ==0) nz = 1; //(npe - npe_per_frame) / dpe;
-        printf("nchan=%d\nnrep=%d\nnro=%d\nnpe=%d\nngrid=%d\nnimg=%d\n", nchan, nrep, nro, npe, ngrid, nimg);
+    if (p.flag_adjoint) {  // reading non-uniform data
+        p.flag_input_uniform = 0;
+        p.nchan = ra_in.dims[0];
+        p.nrep = ra_in.dims[1];
+        p.nro = ra_in.dims[2];
+        p.npe = ra_in.dims[3];
+        if (p.ngrid == 0.f) p.ngrid = p.nro*p.poversamp;
+        if (p.npe_per_frame == 0.f) p.npe_per_frame = p.nro;
+        if (p.nimg == 0.f) p.nimg = p.nro/2;
+        if (p.nrep == 0.f) p.nrep = (p.npe - p.npe_per_frame) / p.dpe;
+        if (p.nz ==0) p.nz = 1; //(npe - npe_per_frame) / dpe;
+        printf("nchan=%d\nnrep=%d\nnro=%d\nnpe=%d\nngrid=%d\nnimg=%d\n", p.nchan, p.nrep, p.nro, p.npe, p.ngrid, p.nimg);
 
-        h_outdatasize = nrep*nimg*nimg*nz*sizeof(float2);
+        h_outdatasize = p.nrep*p.nimg*p.nimg*p.nz*sizeof(float2);
     }
     else
     { // de-gridding first, reading Cartesian
-        flag_input_uniform = 1;
-        nchan = ra_in.dims[0];
-        nrep = ra_in.dims[1];
-        nx = ra_in.dims[2];
-        ny = ra_in.dims[3];
-        printf("nchan=%d\nnrep=%d\nnx=%d\nny=%d\n", nchan, nrep, nx ,ny);
-        nimg = nx;  // TODO: implement non-square images
-        nro = 2*nimg;
-        oversamp = 1.f;
-        ngrid = nimg*oversamp;
-        npe_per_frame = nro;
-        npe = nro;  //dpe*nrep + npe_per_frame;
-        nz = 1;
-        h_outdatasize = nrep*nro*npe*sizeof(float2);
+        p.flag_input_uniform = 1;
+        p.nchan = ra_in.dims[0];
+        p.nrep = ra_in.dims[1];
+        p.nx = ra_in.dims[2];
+        p.ny = ra_in.dims[3];
+        printf("nchan=%d\nnrep=%d\nnx=%d\nny=%d\n", p.nchan, p.nrep, p.nx, p.ny);
+        p.nimg = p.nx;  // TODO: implement non-square images
+        p.nro = 2*p.nimg;
+        p.oversamp = 1.f;
+        p.ngrid = p.nimg*p.oversamp;
+        p.npe_per_frame = p.nro;
+        p.npe = p.nro;  //dpe*nrep + npe_per_frame;
+        p.nz = 1;
+        h_outdatasize = p.nrep*p.nro*p.npe*sizeof(float2);
     }
 
-    assert(nchan % 2 == 0 || nchan == 1);
+    assert(p.nchan % 2 == 0 || p.nchan == 1);
 
     printf("outdatasize: %lu\n", h_outdatasize);
     // allocate pinned memory, which allows async calls
@@ -909,14 +911,14 @@ main (int argc, char *argv[])
     if (flag_adjoint) {  // gridding first, reading non-uniform data
 
       ra_out.dims[0] = 1;
-      ra_out.dims[1] = nimg;
-      ra_out.dims[2] = nimg;
-      ra_out.dims[3] = nrep;
+      ra_out.dims[1] = p.nimg;
+      ra_out.dims[2] = p.nimg;
+      ra_out.dims[3] = p.nrep;
     } else {
       ra_out.dims[0] = 1;
-      ra_out.dims[1] = nrep;
-      ra_out.dims[2] = nro;
-      ra_out.dims[3] = npe;
+      ra_out.dims[1] = p.nrep;
+      ra_out.dims[2] = p.nro;
+      ra_out.dims[3] = p.npe;
     }
     ra_out.data = (uint8_t*)h_outdata;
     printf("write result to %s\n", outfile);
