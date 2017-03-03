@@ -79,11 +79,11 @@ static size_t h_outdatasize;
 typedef struct {
     float grid_oversamp;  // TODO: compute ngrid from nx, ny and oversamp
     float kernwidth;
-    float acq_undersamp;
+    float data_undersamp;
 
-    int npe_per_frame;  // defined as acq_undersamp * nro
-    int dpe;         // TODO: rename to dpe_per_frame
-    int peskip;
+    int prof_per_image;     // # of profiles to use for each reconstructed image; default: data_undersamp * nro
+    int prof_slide;         // # of profiles to slide through the data between reconstructed images
+    int skip_angles;        // # of angles to skip at beginning of image stack
 
     dim_t in_dims;
     dim_t out_dims;
@@ -127,11 +127,11 @@ TRON_set_default_plan (TRON_plan *p)
     }
 
     // STYLE PARAMETERS
-    p->dpe = 0;
-    p->peskip = 0;
-    p->npe_per_frame = 0;
+    p->prof_slide = 0;
+    p->skip_angles = 0;
+    p->prof_per_image = 0;
     p->grid_oversamp = 2.f;
-    p->acq_undersamp = 1.f;
+    p->data_undersamp = 1.f;
     p->kernwidth = 2.f;
 
     // BOOLEAN OPTIONS
@@ -519,7 +519,7 @@ extern "C" {  // don't mangle name, so can call from other languages
 __global__ void
 gridradial2d (float2 *udata, const float2 * __restrict__ nudata, const int ngrid,
     const int nchan, const int nro, const int npe, const float kernwidth, const float grid_oversamp,
-const int peskip, const int flag_postcomp, const int flag_golden_angle)
+const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
 {
     // udata: [NCHAN x NGRID x NGRID], nudata: NCHAN x NRO x NPE
     //float grid_oversamp = float(ngrid) / float(nro); // grid_oversampling factor
@@ -562,7 +562,7 @@ const int peskip, const int flag_postcomp, const int flag_golden_angle)
         // for diff acquisitions
         for (int pe = 0; pe < npe; ++pe)
         {
-            float profile_theta = flag_golden_angle ? modang(PHI * float(pe + peskip)) : float(pe) * M_PI / float(npe) + M_PI/2;
+            float profile_theta = flag_golden_angle ? modang(PHI * float(pe + skip_angles)) : float(pe) * M_PI / float(npe) + M_PI/2;
             //float dtheta1 = fabsf(modang(profile_theta - gridpoint_theta));
             //float dtheta2 = fabsf(modang(profile_theta + M_PI) - gridpoint_theta);
             //float dtheta1 = fabsf(profile_theta - gridpoint_theta);
@@ -612,7 +612,7 @@ __global__ void
 degridradial2d (
     float2 *nudata, const float2 * __restrict__ udata, const int nimg,
     const int nchan, const int nro, const int npe, const float kernwidth,
-    const float grid_oversamp, const int peskip, const int flag_golden_angle)
+    const float grid_oversamp, const int skip_angles, const int flag_golden_angle)
 {
     // udata: [NCHAN x NGRID x NGRID], nudata: NCHAN x NRO x NPE
     //float grid_oversamp = float(ngrid) / float(nro); // grid_oversampling factor
@@ -622,7 +622,7 @@ degridradial2d (
         int pe = id / nro; // find my location in the non-uniform data
         int ro = id % nro;
         float r = (ro - 0.5f * nro )/ (float)(nro); // [-0.5,0.5-1/nro] convert indices to (r,theta) coordinates
-        float t = flag_golden_angle ? modang(PHI*(pe + peskip)) : float(pe) * M_PI / float(npe)+ M_PI/2;
+        float t = flag_golden_angle ? modang(PHI*(pe + skip_angles)) : float(pe) * M_PI / float(npe)+ M_PI/2;
         float kx = r*cos(t); // [-0.5,0.5-1/nro] Cartesian freqs of non-Cart datum  // TODO: _sincosf?
         float ky = r*sin(t); // [-0.5,0.5-1/nro]
         float x = nimg*(0.5 - kx);  // [0,ngrid] (x,y) coordinates in grid units
@@ -657,7 +657,7 @@ tron_init (TRON_plan *p)
   DPRINT("kernels configured with %d blocks of %d threads\n", gridsize, blocksize);
 
   // array sizes
-  d_nudatasize = p->nchan*p->nro*p->npe_per_frame*sizeof(float2);  // input data
+  d_nudatasize = p->nchan*p->nro*p->prof_per_image*sizeof(float2);  // input data
   d_udatasize = p->nchan*p->ngrid*p->ngrid*sizeof(float2); // multi-coil gridded data
   d_gridsize = p->ngrid*p->ngrid*sizeof(float2);  // single channel grid size
   d_coilimgsize = p->nchan*p->nimg*p->nimg*sizeof(float2); // coil images
@@ -721,21 +721,21 @@ recon_radial_2d(float2 *h_outdata, const float2 *__restrict__ h_indata, TRON_pla
         int j = t % NSTREAMS; // j is stream index
         if (MULTI_GPU) cudaSetDevice(j % ndevices);
 
-        int peoffset = t*p->dpe;
+        int peoffset = t*p->prof_slide;
         size_t data_offset = p->nchan*p->nro*peoffset;
         size_t img_offset = p->nimg*p->nimg*t;
 
         printf("[dev %d, stream %d] reconstructing rep %d/%d from PEs %d-%d (offset %ld)\n",
-            j%ndevices, j, t+1, p->nrep, t*p->dpe, (t+1)*p->dpe-1, data_offset);
+            j%ndevices, j, t+1, p->nrep, t*p->prof_slide, (t+1)*p->prof_slide-1, data_offset);
 
         if (p->flags.adjoint)
         {
             cuTry(cudaMemcpyAsync(d_nudata[j], h_indata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
           // reverse from non-uniform data to image
-            precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], p->nchan, p->nro, p->npe, p->npe_per_frame);
+            precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], p->nchan, p->nro, p->npe, p->prof_per_image);
             gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j],
-                p->ngrid, p->nchan, p->nro, p->npe_per_frame, p->kernwidth,
-                p->grid_oversamp, p->peskip+peoffset, p->flags.postcomp, p->flags.golden_angle);
+                p->ngrid, p->nchan, p->nro, p->prof_per_image, p->kernwidth,
+                p->grid_oversamp, p->skip_angles+peoffset, p->flags.postcomp, p->flags.golden_angle);
             fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], p->ngrid,
             p->nchan);
             cufftSafeCall(cufftExecC2C(fft_plan_os[j], d_udata[j], d_udata[j], CUFFT_INVERSE));
@@ -765,7 +765,7 @@ recon_radial_2d(float2 *h_outdata, const float2 *__restrict__ h_indata, TRON_pla
             fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], p->nimg, p->nchan);
             //copy<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_img[j], nimg*nimg);
             degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_img[j],
-                p->nimg, p->nchan, p->nro, p->npe, p->kernwidth, p->grid_oversamp, p->peskip, p->flags.golden_angle);
+                p->nimg, p->nchan, p->nro, p->npe, p->kernwidth, p->grid_oversamp, p->skip_angles, p->flags.golden_angle);
             cuTry(cudaMemcpyAsync(h_outdata + p->nchan*p->nro*p->npe*t, d_nudata[j], d_nudatasize, cudaMemcpyDeviceToHost, stream[j]));
         }
 
@@ -782,26 +782,24 @@ recon_radial_2d(float2 *h_outdata, const float2 *__restrict__ h_indata, TRON_pla
 void
 print_usage()
 {
-    fprintf(stderr, "Usage: tron [-3ahuv] [-r cmds] [-d dpe] [-k width] [-o grid_oversamp] [-s peskip] <infile.ra> [outfile.ra]\n");
+    fprintf(stderr, "Usage: tron [-3ahuv] [-r cmds] [-d prof_slide] [-k width] [-o grid_oversamp] [-s skip_angles] [-u data_undersamp] <infile.ra> [outfile.ra]\n");
     fprintf(stderr, "\t-3\t\t\3D koosh ball trajectory\n");
     fprintf(stderr, "\t-a\t\t\tadjoint operation\n");
-    fprintf(stderr, "\t-d dpe\t\t\tnumber of phase encodes to skip between slices\n");
+    fprintf(stderr, "\t-d prof_slide\t\t\tnumber of phase encodes to slide between slices for helical scans\n");
     fprintf(stderr, "\t-g\t\t\tgolden angle radial\n");
     fprintf(stderr, "\t-h\t\t\tshow this help\n");
     fprintf(stderr, "\t-k width\t\twidth of gridding kernel\n");
     fprintf(stderr, "\t-o grid_oversamp\t\tgrid grid oversampling factor\n");
-    fprintf(stderr, "\t-p npe\t\t\tnumber of phase encodes per image\n");
     fprintf(stderr, "\t-r nro\t\t\tnumber of readout points\n");
-    fprintf(stderr, "\t-s peskip\t\tnumber of initial phase encodes to skip\n");
+    fprintf(stderr, "\t-s skip_angles\t\tnumber of initial phase encodes to skip\n");
+    fprintf(stderr, "\t-u data_undersamp\t\tinput data undersampling factor\n");
     fprintf(stderr, "\t-v\t\t\tverbose output\n");
-
 }
 
 
 int
 main (int argc, char *argv[])
 {
-    // for testing
     float2 *h_indata, *h_outdata;
     ra_t ra_in, ra_out;
     int c, index;
@@ -811,7 +809,7 @@ main (int argc, char *argv[])
     TRON_set_default_plan(&p);
 
     opterr = 0;
-    while ((c = getopt (argc, argv, "3ad:ghk:o:p:r:s:v")) != -1)
+    while ((c = getopt (argc, argv, "3ad:ghk:o:r:s:u:v")) != -1)
     {
         switch (c) {
             case '3':
@@ -820,7 +818,7 @@ main (int argc, char *argv[])
                 p.flags.adjoint = 1;
                 break;
             case 'd':
-                p.dpe = atoi(optarg);
+                p.prof_slide = atoi(optarg);
                 break;
             case 'g':
                 p.flags.golden_angle = 1;
@@ -834,14 +832,14 @@ main (int argc, char *argv[])
             case 'o':
                 p.grid_oversamp = atof(optarg);
                 break;
-            case 'p':
-                p.npe = atoi(optarg);
+            case 'u':
+                p.data_undersamp = atof(optarg);
                 break;
             case 'r':
                 p.nro = atoi(optarg);
                 break;
             case 's':
-                p.peskip = atoi(optarg);
+                p.skip_angles = atoi(optarg);
                 break;
             case 'v':
                 flag_verbose = 1;
@@ -865,9 +863,10 @@ main (int argc, char *argv[])
         snprintf(outfile, 1024, "%s", argv[index]);
     }
 
-    DPRINT("Skipping first %d PEs.\n", p.peskip);
-    DPRINT("PE spacing set to %d.\n", p.dpe);
+    DPRINT("Skipping first %d PEs.\n", p.skip_angles);
+    DPRINT("PE spacing set to %d.\n", p.prof_slide);
     DPRINT("Kernel width set to %.1f.\n", p.kernwidth);
+    DPRINT("Data undersampling factor set to %.3f.\n", p.data_undersamp);
     DPRINT("Oversampling factor set to %.3f.\n", p.grid_oversamp);
     DPRINT("Infile: %s\n", infile);
     DPRINT("Outfile: %s\n", outfile);
@@ -891,27 +890,21 @@ main (int argc, char *argv[])
         p.out_dims.t = p.in_dims.t;
         p.out_dims.x = p.in_dims.r / 2;
         p.out_dims.y = p.in_dims.r / 2;
+        p.prof_per_image = p.data_undersamp * p.in_dims.r;  // TODO: fix this hack
         if (p.flags.koosh)
             p.out_dims.z = p.in_dims.r / 2;
-        else {
-            p.out_dims.z = (p.in_dims.y - p.npe_per_frame) / p.dpe_per_frame;
-        }
-
-        if (p.ngrid == 0.f) p.ngrid = p.nro*p.grid_oversamp;
-        if (p.npe_per_frame == 0.f) p.npe_per_frame = p.nro;
-        if (p.nimg == 0.f) p.nimg = p.nro/2;
-        if (p.nrep == 0.f) p.nrep = (p.npe - p.npe_per_frame) / p.dpe;
-        if (p.nz ==0) p.nz = 1; //(npe - npe_per_frame) / dpe;
+        else
+            p.out_dims.z = (p.in_dims.y - p.prof_per_image) / p.prof_slide;
     }
     else
     {
-        p.nimg = p.nx;  // TODO: implement non-square images
-        p.nro = 2*p.nimg;
-        p.grid_oversamp = 1.f;
-        p.ngrid = p.nimg*p.grid_oversamp;
-        p.npe_per_frame = p.nro;
-        p.npe = p.nro;  //dpe*nrep + npe_per_frame;
-        p.nz = 1;
+        p.prof_per_image = p.data_undersamp * p.in_dims.x;  // TODO: fix this hack
+        p.out_dims.c = 1;
+        p.out_dims.t = p.in_dims.t;
+        p.out_dims.r = p.in_dims.x * 2;  // TODO: implement non-square images
+        p.out_dims.theta = p.out_dims.r;   // TODO: make this more customizable
+        p.out_dims.phi = p.flags.koosh ? p.out_dims.z : 1;
+        p.prof_per_image = p.out_dims.theta;
     }
     h_outdatasize = sizeof(float2);
     for (int k = 0; k < 5; ++k)
@@ -920,17 +913,17 @@ main (int argc, char *argv[])
 
     // allocate pinned memory, which allows async calls
 #ifdef CUDA_HOST_MALLOC
-    //cuTry(cudaMallocHost((void**)&h_indata, nchan*nro*npe*sizeof(float2)));
     cuTry(cudaMallocHost((void**)&h_outdata, h_outdatasize));
 #else
-    //h_indata = (float2*)malloc(nchan*nro*npe*sizeof(float2));
     h_outdata = (float2*)malloc(h_outdatasize);
 #endif
 
 
     DPRINT("Running reconstruction ...\n ");
     clock_t start = clock();
+
     recon_radial_2d(h_outdata, h_indata, &p);
+
     clock_t end = clock();
     DPRINT("Elapsed time: %.2f s\n", ((float)(end - start)) / CLOCKS_PER_SEC);
 
