@@ -50,10 +50,11 @@
 #define MAX_RECON_CMDS  20
 const int blocksize = 96;    // CUDA kernel parameters, TWEAK HERE to optimize
 const int gridsize = 2048;
+static char flag_verbose = 0;
 
 // GLOBAL VARIABLES
 static float2 *d_nudata[NSTREAMS], *d_udata[NSTREAMS], *d_coilimg[NSTREAMS],
-    *d_img[NSTREAMS], *d_b1[NSTREAMS], *d_apodos[NSTREAMS], *d_apod[NSTREAMS];
+    *d_img[NSTREAMS], *d_apodos[NSTREAMS], *d_apod[NSTREAMS];
 static cufftHandle fft_plan[NSTREAMS], fft_plan_os[NSTREAMS];
 static cudaStream_t stream[NSTREAMS];
 static int ndevices;
@@ -65,6 +66,8 @@ static size_t d_imgsize; // coil-combined image size
 static size_t d_gridsize;
 static size_t h_outdatasize;
 
+
+#define DPRINT if(flag_verbose)printf
 
 
 // non-uniform data shape: nchan x nrep x nro x npe
@@ -78,74 +81,63 @@ typedef struct {
     float kernwidth;
     float acq_undersamp;
 
-    dim_t udata_dims;    // udata and image are redundant... TODO: merge these
-    dim_t nudata_dims;
-    dim_t image_dims;
-
-    int nchan;  // p->dims.c;
-    int nrep;  // p->dims.t; # of repeated measurements of same trajectory
-    int nro;   // p->dims.x;
-    int npe;    // p->dims.y;
-    int ngrid;  // defined as nro*oversamp/2  ???
-    int nx, ny, nz;  // p->image_dims.x,y,z
-    int nimg;        // p->image_dims.x
-
     int npe_per_frame;  // defined as acq_undersamp * nro
-
     int dpe;         // TODO: rename to dpe_per_frame
     int peskip;
 
+    dim_t in_dims;
+    dim_t out_dims;
+
+    int nchan;  // p->dims.c;
+    int nrep;  // p->dims.t; # of repeated measurements of same trajectory
+    int nro;
+    int npe;
+    int ngrid;
+    int nx, ny, nz;
+    int nimg;
+
     struct {
-        unsigned adjoint : 1;
-        unsigned postcomp : 1;
-        unsigned deapodize : 1;
-        unsigned input_uniform : 1;
-        unsigned golden_angle: 4;
+        unsigned adjoint       : 1;
+        unsigned postcomp      : 1;
+        unsigned deapodize     : 1;
+        unsigned koosh         : 1;
+        unsigned golden_angle  : 5;   // padded to 8 bits
     } flags;
-    // char flag_adjoint;
-    // char flag_postcomp;
-    // char flag_deapodize;
-    // char flag_input_uniform;
-    // char flag_golden_angle;
+
 } TRON_plan;
 
 
 void
 TRON_set_default_plan (TRON_plan *p)
 {
+
+    // TODO: REMOVE THESE
     p->nchan = 0;
     p->nrep = 0;  // # of repeated measurements of same trajectory
     p->nro = 0;
     p->npe = 0;
     p->ngrid = 0;
-
     p->nx = 0;
     p->ny = 0;
     p->nz = 0;
 
-    p->data_dims.c = 0;
-    p->data_dims.t = 0;
-    p->data_dims.x = 0;
-    p->data_dims.y = 0;
-    p->data_dims.z = 0;
-    p->image_dims.c = 0;
-    p->image_dims.t = 0;
-    p->image_dims.x = 0;
-    p->image_dims.y = 0;
-    p->image_dims.z = 0;
+    for (int i = 0; i < 5; ++i) {
+        p->in_dims.n[i] = 0;
+        p->out_dims.n[i] = 0;
+    }
 
+    // STYLE PARAMETERS
     p->dpe = 0;
     p->peskip = 0;
-
-    p->nimg = 0;
     p->npe_per_frame = 0;
     p->grid_oversamp = 2.f;
     p->acq_undersamp = 1.f;
     p->kernwidth = 2.f;
+
+    // BOOLEAN OPTIONS
     p->flags.adjoint = 0;
     p->flags.postcomp = 0;
     p->flags.deapodize = 1;
-    p->flags.input_uniform = 0;
     p->flags.golden_angle = 0;
 }
 
@@ -521,6 +513,9 @@ pad (float2* dst, const int ndst, const float2* __restrict__ src, const int nsrc
 
 extern "C" {  // don't mangle name, so can call from other languages
 
+/*
+    grid a single 2D image from input radial data
+*/
 __global__ void
 gridradial2d (float2 *udata, const float2 * __restrict__ nudata, const int ngrid,
     const int nchan, const int nro, const int npe, const float kernwidth, const float grid_oversamp,
@@ -612,7 +607,7 @@ const int peskip, const int flag_postcomp, const int flag_golden_angle)
     }
 }
 
-
+/*  generate 2D radial data from an input 2D image */
 __global__ void
 degridradial2d (
     float2 *nudata, const float2 * __restrict__ udata, const int nimg,
@@ -656,10 +651,10 @@ tron_init (TRON_plan *p)
     cuTry(cudaGetDeviceCount(&ndevices));
   } else
     ndevices = 1;
-  printf("MULTI_GPU = %d\n", MULTI_GPU);
-  printf("NSTREAMS = %d\n", NSTREAMS);
-  printf("using %d CUDA devices\n", ndevices);
-  printf("kernels configured with %d blocks of %d threads\n", gridsize, blocksize);
+  DPRINT("MULTI_GPU = %d\n", MULTI_GPU);
+  DPRINT("NSTREAMS = %d\n", NSTREAMS);
+  DPRINT("using %d CUDA devices\n", ndevices);
+  DPRINT("kernels configured with %d blocks of %d threads\n", gridsize, blocksize);
 
   // array sizes
   d_nudatasize = p->nchan*p->nro*p->npe_per_frame*sizeof(float2);  // input data
@@ -699,7 +694,7 @@ tron_init (TRON_plan *p)
 void
 tron_shutdown()
 {
-    printf("freeing device memory\n");
+    DPRINT("freeing device memory\n");
     for (int j = 0; j < NSTREAMS; ++j) { // free allocated memory
         if (MULTI_GPU) cudaSetDevice(j % ndevices);
         cuTry(cudaFree(d_nudata[j]));
@@ -713,8 +708,11 @@ tron_shutdown()
 }
 
 
+/*
+    Reconstruct images from 2D radial data.
+*/
 __host__ void
-recon_gar2d (float2 *h_outdata, const float2 *__restrict__ h_indata, TRON_plan *p)
+recon_radial_2d(float2 *h_outdata, const float2 *__restrict__ h_indata, TRON_plan *p)
 {
     tron_init(p);
 
@@ -758,7 +756,7 @@ recon_gar2d (float2 *h_outdata, const float2 *__restrict__ h_indata, TRON_plan *
         }
         else
         {  // forward from image to non-uniform data
-            printf("ngrid = %d\n", p->ngrid);
+            DPRINT("ngrid = %d\n", p->ngrid);
             cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
             degrid_deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], p->nimg,
             1, p->kernwidth, p->grid_oversamp );
@@ -784,17 +782,18 @@ recon_gar2d (float2 *h_outdata, const float2 *__restrict__ h_indata, TRON_plan *
 void
 print_usage()
 {
-    fprintf(stderr, "Usage: tron [-hu] [-r cmds] [-d dpe] [-k width] [-o grid_oversamp] [-s peskip] <infile.ra> [outfile.ra]\n");
+    fprintf(stderr, "Usage: tron [-3ahuv] [-r cmds] [-d dpe] [-k width] [-o grid_oversamp] [-s peskip] <infile.ra> [outfile.ra]\n");
+    fprintf(stderr, "\t-3\t\t\3D koosh ball trajectory\n");
     fprintf(stderr, "\t-a\t\t\tadjoint operation\n");
     fprintf(stderr, "\t-d dpe\t\t\tnumber of phase encodes to skip between slices\n");
     fprintf(stderr, "\t-g\t\t\tgolden angle radial\n");
     fprintf(stderr, "\t-h\t\t\tshow this help\n");
     fprintf(stderr, "\t-k width\t\twidth of gridding kernel\n");
-    fprintf(stderr, "\t-o grid_oversamp\t\tgrid grid_oversampling factor\n");
+    fprintf(stderr, "\t-o grid_oversamp\t\tgrid grid oversampling factor\n");
     fprintf(stderr, "\t-p npe\t\t\tnumber of phase encodes per image\n");
     fprintf(stderr, "\t-r nro\t\t\tnumber of readout points\n");
     fprintf(stderr, "\t-s peskip\t\tnumber of initial phase encodes to skip\n");
-    fprintf(stderr, "\t-u\t\t\tinput data is uniform (not implemented yet)\n");
+    fprintf(stderr, "\t-v\t\t\tverbose output\n");
 
 }
 
@@ -812,9 +811,11 @@ main (int argc, char *argv[])
     TRON_set_default_plan(&p);
 
     opterr = 0;
-    while ((c = getopt (argc, argv, "ad:ghk:o:p:r:s:u")) != -1)
+    while ((c = getopt (argc, argv, "3ad:ghk:o:p:r:s:v")) != -1)
     {
         switch (c) {
+            case '3':
+                p.flags.koosh = 1;
             case 'a':
                 p.flags.adjoint = 1;
                 break;
@@ -842,8 +843,8 @@ main (int argc, char *argv[])
             case 's':
                 p.peskip = atoi(optarg);
                 break;
-            case 'u':
-                p.flags.input_uniform = 1;
+            case 'v':
+                flag_verbose = 1;
                 break;
             default:
                 print_usage();
@@ -851,6 +852,7 @@ main (int argc, char *argv[])
         }
     }
 
+    // set input and output files
     snprintf(outfile, 1024, "img_tron.ra"); // default value
     if (argc == optind) {
        print_usage();
@@ -862,47 +864,47 @@ main (int argc, char *argv[])
       else if (index == optind + 1)
         snprintf(outfile, 1024, "%s", argv[index]);
     }
-    printf("Skipping first %d PEs.\n", p.peskip);
-    printf("PE spacing set to %d.\n", p.dpe);
-    printf("Kernel width set to %.1f.\n", p.kernwidth);
-    printf("Oversampling factor set to %.3f.\n", p.grid_oversamp);
-    printf("Infile: %s\n", infile);
-    printf("Outfile: %s\n", outfile);
 
-    printf("reading %s\n", infile);
+    DPRINT("Skipping first %d PEs.\n", p.peskip);
+    DPRINT("PE spacing set to %d.\n", p.dpe);
+    DPRINT("Kernel width set to %.1f.\n", p.kernwidth);
+    DPRINT("Oversampling factor set to %.3f.\n", p.grid_oversamp);
+    DPRINT("Infile: %s\n", infile);
+    DPRINT("Outfile: %s\n", outfile);
+
+    DPRINT("Reading %s\n", infile);
     ra_read(&ra_in, infile);
     h_indata = (float2*)ra_in.data;
-    printf("sanity check: indata[0] = %f + %f i\n", h_indata[0].x, h_indata[0].y);
-    printf("dims = {%lud, %lud, %lud, %lud}\n", ra_in.dims[0],
-        ra_in.dims[1], ra_in.dims[2], ra_in.dims[3]);
+    assert(ra_in.ndims == 5);
+    memcpy(p.in_dims.n, ra_in.dims, 5*sizeof(uint64_t));
+    DPRINT("Sanity check: indata[0] = %f + %f i\n", h_indata[0].x, h_indata[0].y);
+    DPRINT("in_dims = {%lu, %lu, %lu, %lu, %lu}\n", p.in_dims.c, p.in_dims.t, p.in_dims.x, p.in_dims.y, p.in_dims.z);
+    assert(p.in_dims.c % 2 == 0 || p.in_dims.c == 1); // only single or even dimensions implemented for now
 
 
-    clock_t start = clock();
+    printf("WARNING: Assuming square Cartesian dimensions for now.\n");
 
+    // HERE IS WHERE WE COMPUTE OUTPUT DIMENSIONS BASED ON INPUT AND OPTIONAL ARGS
+    if (p.flags.adjoint)
+    {
+        p.out_dims.c = 1;
+        p.out_dims.t = p.in_dims.t;
+        p.out_dims.x = p.in_dims.r / 2;
+        p.out_dims.y = p.in_dims.r / 2;
+        if (p.flags.koosh)
+            p.out_dims.z = p.in_dims.r / 2;
+        else {
+            p.out_dims.z = (p.in_dims.y - p.npe_per_frame) / p.dpe_per_frame;
+        }
 
-    if (p.flags.adjoint) {  // reading non-uniform data
-        p.flags.input_uniform = 0;
-        p.nchan = ra_in.dims[0];
-        p.nrep = ra_in.dims[1];
-        p.nro = ra_in.dims[2];
-        p.npe = ra_in.dims[3];
         if (p.ngrid == 0.f) p.ngrid = p.nro*p.grid_oversamp;
         if (p.npe_per_frame == 0.f) p.npe_per_frame = p.nro;
         if (p.nimg == 0.f) p.nimg = p.nro/2;
         if (p.nrep == 0.f) p.nrep = (p.npe - p.npe_per_frame) / p.dpe;
         if (p.nz ==0) p.nz = 1; //(npe - npe_per_frame) / dpe;
-        printf("nchan=%d\nnrep=%d\nnro=%d\nnpe=%d\nngrid=%d\nnimg=%d\n", p.nchan, p.nrep, p.nro, p.npe, p.ngrid, p.nimg);
-
-        h_outdatasize = p.nrep*p.nimg*p.nimg*p.nz*sizeof(float2);
     }
     else
-    { // de-gridding first, reading Cartesian
-        p.flags.input_uniform = 1;
-        p.nchan = ra_in.dims[0];
-        p.nrep = ra_in.dims[1];
-        p.nx = ra_in.dims[2];
-        p.ny = ra_in.dims[3];
-        printf("nchan=%d\nnrep=%d\nnx=%d\nny=%d\n", p.nchan, p.nrep, p.nx, p.ny);
+    {
         p.nimg = p.nx;  // TODO: implement non-square images
         p.nro = 2*p.nimg;
         p.grid_oversamp = 1.f;
@@ -910,12 +912,12 @@ main (int argc, char *argv[])
         p.npe_per_frame = p.nro;
         p.npe = p.nro;  //dpe*nrep + npe_per_frame;
         p.nz = 1;
-        h_outdatasize = p.nrep*p.nro*p.npe*sizeof(float2);
     }
+    h_outdatasize = sizeof(float2);
+    for (int k = 0; k < 5; ++k)
+        h_outdatasize *= p.out_dims.n[k];
 
-    assert(p.nchan % 2 == 0 || p.nchan == 1);
 
-    printf("outdatasize: %lu\n", h_outdatasize);
     // allocate pinned memory, which allows async calls
 #ifdef CUDA_HOST_MALLOC
     //cuTry(cudaMallocHost((void**)&h_indata, nchan*nro*npe*sizeof(float2)));
@@ -926,44 +928,23 @@ main (int argc, char *argv[])
 #endif
 
 
-    // the magic happens
-    recon_gar2d(h_outdata, h_indata, &p);
-
-
-    //nufft_gar2d(h_outdata, h_indata, recon_commands);
-
-
+    DPRINT("Running reconstruction ...\n ");
+    clock_t start = clock();
+    recon_radial_2d(h_outdata, h_indata, &p);
     clock_t end = clock();
-    printf("elapsed time: %.2f s\n", ((float)(end - start)) / CLOCKS_PER_SEC);
+    DPRINT("Elapsed time: %.2f s\n", ((float)(end - start)) / CLOCKS_PER_SEC);
 
-      // save results
+    DPRINT("Saving result to %s\n", outfile);
     ra_out.flags = 0;
     ra_out.eltype = 4;
     ra_out.elbyte = 8;
     ra_out.size = h_outdatasize;
-    ra_out.ndims = 4;
-    ra_out.dims = (uint64_t*)malloc(4*sizeof(uint64_t));
-
-    if (p.flags.adjoint) {  // gridding first, reading non-uniform data
-
-      ra_out.dims[0] = 1;
-      ra_out.dims[1] = p.nimg;
-      ra_out.dims[2] = p.nimg;
-      ra_out.dims[3] = p.nrep;
-    } else {
-      ra_out.dims[0] = 1;
-      ra_out.dims[1] = p.nrep;
-      ra_out.dims[2] = p.nro;
-      ra_out.dims[3] = p.npe;
-    }
+    ra_out.ndims = 5;
+    memcpy(ra_out.dims, p.out_dims.n, 5*sizeof(uint64_t));
     ra_out.data = (uint8_t*)h_outdata;
-    printf("write result to %s\n", outfile);
     ra_write(&ra_out, outfile);
 
-
-
-    printf("free host memory\n");
-
+    DPRINT("Cleaning up.\n");
     ra_free(&ra_in);
 #ifdef CUDA_HOST_MALLOC
     //cudaFreeHost(&h_indata);
