@@ -20,6 +20,13 @@ typedef struct {
     float2 *data;  // single precision complex
 } MR_data;
 
+
+inline uint64_t
+dim_prod (const dim_t *d)
+{
+    return d->n[0] * d->n[1] * d->n[2] * d->n[3] * d->n[4];
+}
+
 void
 MR_data_read (MR_data *d, char *rafile)
 {
