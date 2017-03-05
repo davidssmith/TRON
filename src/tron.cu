@@ -69,6 +69,7 @@ static size_t h_outdatasize;
 
 
 #define DPRINT if(flag_verbose)printf
+#define dprint(expr,fmt)  do{ if(flag_verbose)printf(#expr " = %" #fmt "\n", expr) }while(0);
 
 
 // non-uniform data shape: nchan x nrep x nro x npe
@@ -227,10 +228,17 @@ __host__ void
 fftwithshift (float2 *x[], cufftHandle *plan, const int j, const int n, const int nrep)
 {
     fftshift<<<gridsize,blocksize,0,stream[j]>>>(x[j], n, nrep);
-    cufftSafeCall(cufftExecC2C(*plan, x[j], x[j], CUFFT_INVERSE));
+    cufftSafeCall(cufftExecC2C(*plan, x[j], x[j], CUFFT_FORWARD));
     fftshift<<<gridsize,blocksize,0,stream[j]>>>(x[j], n, nrep);
 }
 
+__host__ void
+ifftwithshift (float2 *x[], cufftHandle *plan, const int j, const int n, const int nrep)
+{
+    fftshift<<<gridsize,blocksize,0,stream[j]>>>(x[j], n, nrep);
+    cufftSafeCall(cufftExecC2C(*plan, x[j], x[j], CUFFT_INVERSE));
+    fftshift<<<gridsize,blocksize,0,stream[j]>>>(x[j], n, nrep);
+}
 
 __device__ void
 powit (float2 *A, const int n, const int niters)
@@ -750,6 +758,8 @@ recon_radial_2d(float2 *h_outdata, const float2 *__restrict__ h_indata, TRON_pla
                 ngrid, p->in_data.c, p->in_data.r, p->prof_per_image, p->kernwidth,
                 p->grid_oversamp, p->skip_angles+peoffset, p->flags.postcomp, p->flags.golden_angle);
             fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_outdata[j], ngrid, p->in_data.c);
+            //ifftwithshift (d_outdata[j], fft_plan_os[j], j, ngrid, p->out_dims.t*p->out_dims.c)
+
             cufftSafeCall(cufftExecC2C(fft_plan_os[j], d_outdata[j], d_outdata[j], CUFFT_INVERSE));
             fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_outdata[j], ngrid, p->in_dims.c);
             crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], p->out_dims.x, d_outdata[j], ngrid, p->in_dims.c);
@@ -765,12 +775,13 @@ recon_radial_2d(float2 *h_outdata, const float2 *__restrict__ h_indata, TRON_pla
             cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
             degrid_deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], p->nimg,
             1, p->kernwidth, p->grid_oversamp );
+            //fftwithshift (d_img[j], fft_plan_os[j], j, ngrid, p->out_dims.t*p->out_dims.c)
             fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], p->nimg, p->nchan);
             cufftSafeCall(cufftExecC2C(fft_plan[j], d_img[j], d_img[j], CUFFT_FORWARD));
             fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], p->nimg, p->nchan);
             //copy<<<gridsize,blocksize,0,stream[j]>>>(d_indata[j], d_img[j], nimg*nimg);
             degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_indata[j], d_img[j],
-                p->nimg, p->nchan, p->nro, p->npe, p->kernwidth, p->grid_oversamp, p->skip_angles, p->flags.golden_angle);
+                p->in_data.x, p->in_data.c, p->out_data.r, p->out_data.theta, p->kernwidth, p->grid_oversamp, p->skip_angles, p->flags.golden_angle);
             cuTry(cudaMemcpyAsync(h_outdata + p->nchan*p->nro*p->npe*t, d_indata[j], d_indatasize, cudaMemcpyDeviceToHost, stream[j]));
         }
 
@@ -868,13 +879,13 @@ main (int argc, char *argv[])
         snprintf(outfile, 1024, "%s", argv[index]);
     }
 
-    DPRINT("Skipping first %d PEs.\n", p.skip_angles);
-    DPRINT("PE spacing set to %d.\n", p.prof_slide);
-    DPRINT("Kernel width set to %.1f.\n", p.kernwidth);
-    DPRINT("Data undersampling factor set to %.3f.\n", p.data_undersamp);
-    DPRINT("Oversampling factor set to %.3f.\n", p.grid_oversamp);
-    DPRINT("Infile: %s\n", infile);
-    DPRINT("Outfile: %s\n", outfile);
+    dprint(p.skip_angles, d);
+    dprint(p.prof_slide, d);
+    dprint(p.kernwidth, .1f);
+    dprint(p.data_undersamp, .3f);
+    dprint(p.grid_oversamp, .3f);
+    dprint(infile, s)
+    dprint(outfile, s)
 
     DPRINT("Reading %s\n", infile);
     ra_read(&ra_in, infile);
