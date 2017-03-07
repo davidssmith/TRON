@@ -40,6 +40,7 @@
 #include "float2math.h"
 #include "mri.h"
 #include "ra.h"
+#include "tron.h"
 
 
 // CONFIGURATION PARAMETERS
@@ -144,7 +145,7 @@ TRON_set_default_plan (TRON_plan *p)
 }
 
 // CONSTANTS
-const float PHI = 1.9416089796736116f;
+static const float PHI = 1.9416089796736116f;
 
 inline void
 gpuAssert (cudaError_t code, const char *file, int line, bool abort=true)
