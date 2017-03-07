@@ -56,7 +56,7 @@ static char flag_verbose = 0;
 
 // GLOBAL VARIABLES
 static float2 *d_indata[NSTREAMS], *d_outdata[NSTREAMS], *d_coilimg[NSTREAMS],
-    *d_img[NSTREAMS], *d_apodos[NSTREAMS], *d_apod[NSTREAMS];
+    *d_img[NSTREAMS], *d_apodos[NSTREAMS], *d_apod[NSTREAMS], *d_tmp[NSTREAMS];
 static cufftHandle fft_plan[NSTREAMS], fft_plan_os[NSTREAMS];
 static cudaStream_t stream[NSTREAMS];
 static int ndevices;
@@ -692,8 +692,10 @@ tron_init (TRON_plan *p)
       fft_init(&fft_plan_os[j], p->ngrid, p->ngrid, p->nchan);
       cufftSafeCall(cufftSetStream(fft_plan_os[j], stream[j]));
 
-      cuTry(cudaMalloc((void **)&d_indata[j], d_indatasize));
+      cuTry(cudaMalloc((void **)&d_indata[j],  d_indatasize));
       cuTry(cudaMalloc((void **)&d_outdata[j], d_outdatasize));
+      cuTry(cudaMalloc((void **)&d_tmp[j],     d_outdatasize));
+
       // cuTry(cudaMemset(d_outdata[j], 0, p->d_outdatasize));
       cuTry(cudaMalloc((void **)&d_coilimg[j], d_coilimgsize));
       //cuTry(cudaMalloc((void **)&d_b1[j], d_coilimgsize));
@@ -718,6 +720,8 @@ tron_shutdown()
         if (MULTI_GPU) cudaSetDevice(j % ndevices);
         cuTry(cudaFree(d_indata[j]));
         cuTry(cudaFree(d_outdata[j]));
+        cuTry(cudaFree(d_tmp[j]));
+
         cuTry(cudaFree(d_coilimg[j]));
         //cuTry(cudaFree(d_b1[j]));
         cuTry(cudaFree(d_img[j]));
