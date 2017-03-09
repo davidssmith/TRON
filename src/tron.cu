@@ -55,8 +55,7 @@ static const int gridsize = 2048;
 static char flag_verbose = 0;
 
 // GLOBAL VARIABLES
-static float2 *d_indata[NSTREAMS], *d_outdata[NSTREAMS], *d_coilimg[NSTREAMS],
-    *d_img[NSTREAMS], *d_apodos[NSTREAMS], *d_apod[NSTREAMS], *d_tmp[NSTREAMS];
+static float2 *d_indata[NSTREAMS], *d_outdata[NSTREAMS], *d_apodos[NSTREAMS], *d_apod[NSTREAMS], *d_tmp[NSTREAMS];
 static cufftHandle fft_plan[NSTREAMS], fft_plan_os[NSTREAMS];
 static cudaStream_t stream[NSTREAMS];
 static int ndevices;
@@ -70,7 +69,7 @@ static size_t h_outdatasize;
 
 
 #define DPRINT if(flag_verbose)printf
-#define dprint(expr,fmt)  do{ if(flag_verbose)printf(#expr " = %" #fmt "\n", expr) }while(0);
+#define dprint(expr,fmt)  do{ if(flag_verbose)printf(#expr " = %" #fmt "\n", expr); }while(0);
 
 
 // non-uniform data shape: nchan x nrep x nro x npe
@@ -79,40 +78,11 @@ static size_t h_outdatasize;
 // coil-combined image:            nrep x nimg x nimg x nz
 
 
-typedef struct {
-    float grid_oversamp;  // TODO: compute ngrid from nx, ny and oversamp
-    float kernwidth;
-    float data_undersamp;
-
-    int prof_per_image;     // # of profiles to use for each reconstructed image; default: data_undersamp * nro
-    int prof_slide;         // # of profiles to slide through the data between reconstructed images
-    int skip_angles;        // # of angles to skip at beginning of image stack
-
-    dim_t in_dims;
-    dim_t out_dims;
-
-    int nchan;  // p->dims.c;
-    int nrep;  // p->dims.t; # of repeated measurements of same trajectory
-    int nro;
-    int npe;
-    int ngrid;   // p.out_dims.x * grid_oversamp;
-    int nx, ny, nz;
-    int nimg;
-
-    struct {
-        unsigned adjoint       : 1;
-        unsigned postcomp      : 1;
-        unsigned deapodize     : 1;
-        unsigned koosh         : 1;
-        unsigned golden_angle  : 5;   // padded to 8 bits
-    } flags;
-
-} TRON_plan;
-
 
 void
 TRON_set_default_plan (TRON_plan *p)
 {
+    DPRINT("TRON_set_default_plan\n");
 
     // TODO: REMOVE THESE
     p->nchan = 0;
@@ -214,6 +184,10 @@ fftshift (float2 *dst, const int n, const int nchan)
 __host__ void
 fft_init(cufftHandle *plan, const int nx, const int ny, const int nchan)
 {
+  DPRINT("fft_init\n");
+  dprint(nx,d);
+  dprint(ny,d);
+  dprint(nchan,d);
   // setup FFT
   const int rank = 2;
   int idist = 1, odist = 1, istride = nchan, ostride = nchan;
@@ -226,19 +200,19 @@ fft_init(cufftHandle *plan, const int nx, const int ny, const int nchan)
 
 
 __host__ void
-fftwithshift (float2 *x[], cufftHandle *plan, const int j, const int n, const int nrep)
+fftwithshift (float2 *x, cufftHandle plan, const int j, const int n, const int nrep)
 {
-    fftshift<<<gridsize,blocksize,0,stream[j]>>>(x[j], n, nrep);
-    cufftSafeCall(cufftExecC2C(*plan, x[j], x[j], CUFFT_FORWARD));
-    fftshift<<<gridsize,blocksize,0,stream[j]>>>(x[j], n, nrep);
+    fftshift<<<gridsize,blocksize,0,stream[j]>>>(x, n, nrep);
+    cufftSafeCall(cufftExecC2C(plan, x, x, CUFFT_FORWARD));
+    fftshift<<<gridsize,blocksize,0,stream[j]>>>(x, n, nrep);
 }
 
 __host__ void
-ifftwithshift (float2 *x[], cufftHandle *plan, const int j, const int n, const int nrep)
+ifftwithshift (float2 *x, cufftHandle plan, const int j, const int n, const int nrep)
 {
-    fftshift<<<gridsize,blocksize,0,stream[j]>>>(x[j], n, nrep);
-    cufftSafeCall(cufftExecC2C(*plan, x[j], x[j], CUFFT_INVERSE));
-    fftshift<<<gridsize,blocksize,0,stream[j]>>>(x[j], n, nrep);
+    fftshift<<<gridsize,blocksize,0,stream[j]>>>(x, n, nrep);
+    cufftSafeCall(cufftExecC2C(plan, x, x, CUFFT_INVERSE));
+    fftshift<<<gridsize,blocksize,0,stream[j]>>>(x, n, nrep);
 }
 
 __device__ void
@@ -389,11 +363,13 @@ minangulardist(const float a, const float b)
 }
 
 __host__ void
-fillapod (float2 *d_apod, const int n, const float kernwidth, const float grid_oversamp)
+fillapod (float2 *d_apod, const int nx, const int ny, const float kernwidth, const float grid_oversamp)
 {
-    const size_t d_imgsize = n*n*sizeof(float2);
+    DPRINT("fillapod\n");
+    const size_t d_imgsize = nx*ny*sizeof(float2);
     float2 *h_apod = (float2*)malloc(d_imgsize);
     int w = int(kernwidth);
+    int n = ny;  // TODO: fix this, substitute correct dims
 
     for (int k = 0; k < n*n; ++k)
         h_apod[k] = make_float2(0.f,0.f);
@@ -431,9 +407,9 @@ fillapod (float2 *d_apod, const int n, const float kernwidth, const float grid_o
 }
 
 __global__ void
-deapodize (float2 *img, const float2 * __restrict__ apod, const int nimg, const int nchan)
+deapodize (float2 *img, const float2 * __restrict__ apod, const int nx, const int ny, const int nchan)
 {
-    for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nimg*nimg; id += blockDim.x * gridDim.x)
+    for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nx*ny; id += blockDim.x * gridDim.x)
         for (int c = 0; c < nchan; ++c)
             img[nchan*id+c] *= apod[id].x; // took magnitude prior
 }
@@ -486,8 +462,9 @@ precompensate (float2 *nudata, const int nchan, const int nro, const int npe_per
 }
 
 __global__ void
-crop (float2* dst, const int ndst, const float2* __restrict__ src, const int nsrc, const int nchan)
+crop (float2* dst, const int nxdst, const int nydst, const float2* __restrict__ src, const int nxsrc, const int nysrc, const int nchan)
 {
+    const int nsrc = nxsrc, ndst = nxdst;  // TODO: eliminate this
     const int w = (nsrc - ndst) / 2;
     for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < ndst*ndst; id += blockDim.x * gridDim.x)
     {
@@ -632,7 +609,6 @@ degridradial2d (
 {
     // udata: [NCHAN x NGRID x NGRID], nudata: NCHAN x NRO x NPE
     //float grid_oversamp = float(ngrid) / float(nro); // grid_oversampling factor
-
     for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nro*npe; id += blockDim.x * gridDim.x)
     {
         int pe = id / nro; // find my location in the non-uniform data
@@ -663,6 +639,10 @@ degridradial2d (
 void
 tron_init (TRON_plan *p)
 {
+
+  uint64_t ngridx = p->out_dims.x*p->grid_oversamp;
+  uint64_t ngridy = p->out_dims.y*p->grid_oversamp;
+
   if (MULTI_GPU) {
     cuTry(cudaGetDeviceCount(&ndevices));
   } else
@@ -673,40 +653,46 @@ tron_init (TRON_plan *p)
   DPRINT("Kernels configured with %d blocks of %d threads\n", gridsize, blocksize);
 
   // array sizes
-  d_indatasize = dim_prod(p->in_dims)*sizeof(float2);  // input data
-  d_outdatasize = dim_prod(p->out_dims)*sizeof(float2); // multi-coil gridded data
+  d_indatasize = dim_prod(&p->in_dims)*sizeof(float2);  // input data
+  d_outdatasize = dim_prod(&p->out_dims)*sizeof(float2); // multi-coil gridded data
 
   // TODO: eliminate these by simplifying data storage
-  d_gridsize = p->ngrid*p->ngrid*sizeof(float2);  // single channel grid size
-  d_coilimgsize = p->nchan*p->nimg*p->nimg*sizeof(float2); // coil images
-  d_imgsize = p->nimg*p->nimg*sizeof(float2); // coil-combined image
+  d_gridsize = ngridx*ngridy*sizeof(float2);  // single channel grid size
+  d_coilimgsize = p->in_dims.c*p->out_dims.x*p->out_dims.y*sizeof(float2); // coil images
+  d_imgsize = p->out_dims.x*p->out_dims.y*sizeof(float2); // coil-combined image
 
+  dprint(d_indatasize,ld);
+  dprint(d_outdatasize,ld);
+  dprint(d_gridsize,ld);
+  dprint(d_coilimgsize,ld);
+  dprint(d_imgsize,ld);
 
   for (int j = 0; j < NSTREAMS; ++j) // allocate data and initialize apodization and kernel texture
   {
       if (MULTI_GPU) cudaSetDevice(j % ndevices);
       cuTry(cudaStreamCreate(&stream[j]));
-      fft_init(&fft_plan[j], p->nimg, p->nimg, p->nchan);
+
+      fft_init(&fft_plan[j], p->out_dims.x, p->out_dims.y, p->out_dims.c);
       cufftSafeCall(cufftSetStream(fft_plan[j], stream[j]));
 
-      fft_init(&fft_plan_os[j], p->ngrid, p->ngrid, p->nchan);
+      fft_init(&fft_plan_os[j], ngridx, ngridy, p->out_dims.c);
       cufftSafeCall(cufftSetStream(fft_plan_os[j], stream[j]));
 
       cuTry(cudaMalloc((void **)&d_indata[j],  d_indatasize));
       cuTry(cudaMalloc((void **)&d_outdata[j], d_outdatasize));
       cuTry(cudaMalloc((void **)&d_tmp[j],     d_outdatasize));
 
-      // cuTry(cudaMemset(d_outdata[j], 0, p->d_outdatasize));
-      cuTry(cudaMalloc((void **)&d_coilimg[j], d_coilimgsize));
-      //cuTry(cudaMalloc((void **)&d_b1[j], d_coilimgsize));
-      cuTry(cudaMalloc((void **)&d_img[j], d_imgsize));
+      // // cuTry(cudaMemset(d_outdata[j], 0, p->d_outdatasize));
+      // cuTry(cudaMalloc((void **)&d_coilimg[j], d_coilimgsize));
+      // //cuTry(cudaMalloc((void **)&d_b1[j], d_coilimgsize));
+      // cuTry(cudaMalloc((void **)&d_img[j], d_imgsize));
 
       // TODO: only fill apod if depapodize is called
       // TODO: handle adjoint vs non-adjoint
       cuTry(cudaMalloc((void **)&d_apodos[j], d_gridsize));
       cuTry(cudaMalloc((void **)&d_apod[j], d_imgsize));
-      fillapod(d_apodos[j], p->ngrid, p->kernwidth, p->grid_oversamp);
-      crop<<<p->nimg,p->nimg>>>(d_apod[j], p->nimg, d_apodos[j], p->ngrid, 1);
+      fillapod(d_apodos[j], p->out_dims.x, p->out_dims.y, p->kernwidth, p->grid_oversamp);
+      crop<<<p->nimg,p->nimg>>>(d_apod[j], p->out_dims.x, p->out_dims.y, d_apodos[j], ngridx, ngridy, 1);
       cuTry(cudaFree(d_apodos[j]));
 
   }
@@ -722,9 +708,9 @@ tron_shutdown()
         cuTry(cudaFree(d_outdata[j]));
         cuTry(cudaFree(d_tmp[j]));
 
-        cuTry(cudaFree(d_coilimg[j]));
-        //cuTry(cudaFree(d_b1[j]));
-        cuTry(cudaFree(d_img[j]));
+        // cuTry(cudaFree(d_coilimg[j]));
+        // //cuTry(cudaFree(d_b1[j]));
+        // cuTry(cudaFree(d_img[j]));
         cuTry(cudaFree(d_apod[j]));
         cudaStreamDestroy(stream[j]);
     }
@@ -737,7 +723,10 @@ tron_shutdown()
 __host__ void
 recon_radial_2d(float2 *h_outdata, const float2 *__restrict__ h_indata, TRON_plan *p)
 {
+    DPRINT("recon_radial_2d\n");
     tron_init(p);
+    int ngridx = p->out_dims.x * p->grid_oversamp;
+    int ngridy = p->out_dims.y * p->grid_oversamp;
 
     for (int z = 0; z < p->out_dims.z; ++z)
     {
@@ -749,45 +738,36 @@ recon_radial_2d(float2 *h_outdata, const float2 *__restrict__ h_indata, TRON_pla
         // address offsets into the data arrays
         size_t data_offset = p->in_dims.c * p->in_dims.r * peoffset;
         size_t img_offset = p->out_dims.x * p->out_dims.y * z;
+        dprint(img_offset,ld);
 
         printf("[dev %d, stream %d] reconstructing slice %d/%d from PEs %d-%d (offset %ld)\n",
-            j%ndevices, j, t+1, p->out_dims.z, t*p->prof_slide, (t+1)*p->prof_slide-1, data_offset);
+            j%ndevices, j, z+1, p->out_dims.z, z*p->prof_slide, (z+1)*p->prof_slide-1, data_offset);
+
+        cuTry(cudaMemcpyAsync(d_indata[j], h_indata + data_offset, d_indatasize, cudaMemcpyHostToDevice, stream[j]));
 
         if (p->flags.adjoint)
         {
-            int ngrid = p->out_data.x * p->grid_oversamp;
-            cuTry(cudaMemcpyAsync(d_indata[j], h_indata + data_offset, d_indatasize, cudaMemcpyHostToDevice, stream[j]));
-          // reverse from non-uniform data to image
-            precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_indata[j], p->in_data.c, p->in_data.r, p->prof_per_image, p->in_data.theta);
+            // reverse from non-uniform data to image
+            precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_indata[j], p->in_dims.c, p->in_dims.r, p->prof_per_image, p->in_dims.theta);
             gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_outdata[j], d_indata[j],
-                ngrid, p->in_data.c, p->in_data.r, p->prof_per_image, p->kernwidth,
+                ngridx, p->in_dims.c, p->in_dims.r, p->prof_per_image, p->kernwidth,
                 p->grid_oversamp, p->skip_angles+peoffset, p->flags.postcomp, p->flags.golden_angle);
-            fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_outdata[j], ngrid, p->in_data.c);
-            //ifftwithshift (d_outdata[j], fft_plan_os[j], j, ngrid, p->out_dims.t*p->out_dims.c)
-
-            cufftSafeCall(cufftExecC2C(fft_plan_os[j], d_outdata[j], d_outdata[j], CUFFT_INVERSE));
-            fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_outdata[j], ngrid, p->in_dims.c);
-            crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], p->out_dims.x, d_outdata[j], ngrid, p->in_dims.c);
+            ifftwithshift(d_outdata[j], fft_plan_os[j], j, ngridx, p->out_dims.t*p->out_dims.c);
+            crop<<<gridsize,blocksize,0,stream[j]>>>(d_tmp[j], p->out_dims.x, p->out_dims.y, d_outdata[j], ngridx, ngridy, p->in_dims.c);
             // TODO: look at in_dims.c vs out_dims.c to decide whether to coil combine and by how much (can compress)
-            coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], p->out_dims.x, p->in_dims.c, 1); // 0 works, 1 good, 3 optimal
+            coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_outdata[j], d_tmp[j], p->out_dims.x, p->in_dims.c, 1); // 0 works, 1 good, 3 optimal
             //coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan);
-            deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], p->out_dims.x, 1);
-            cuTry(cudaMemcpyAsync(h_outdata + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
+            deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_outdata[j], d_apod[j], p->out_dims.x, p->out_dims.y, 1);
+            cuTry(cudaMemcpyAsync(h_outdata + img_offset, d_outdata[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
         }
         else
-        {  // forward from image to non-uniform data
-            int ngrid = p->in_data.x * p->grid_oversamp;
-            cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
-            degrid_deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], p->nimg,
-            1, p->kernwidth, p->grid_oversamp );
-            //fftwithshift (d_img[j], fft_plan_os[j], j, ngrid, p->out_dims.t*p->out_dims.c)
-            fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], p->nimg, p->nchan);
-            cufftSafeCall(cufftExecC2C(fft_plan[j], d_img[j], d_img[j], CUFFT_FORWARD));
-            fftshift<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], p->nimg, p->nchan);
+        {   // forward from image to non-uniform data
+            degrid_deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_indata[j], p->in_dims.x, 1, p->kernwidth, p->grid_oversamp);
+            fftwithshift(d_indata[j], fft_plan_os[j], j, p->in_dims.x, p->in_dims.t*p->in_dims.c);
             //copy<<<gridsize,blocksize,0,stream[j]>>>(d_indata[j], d_img[j], nimg*nimg);
-            degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_indata[j], d_img[j],
-                p->in_data.x, p->in_data.c, p->out_data.r, p->out_data.theta, p->kernwidth, p->grid_oversamp, p->skip_angles, p->flags.golden_angle);
-            cuTry(cudaMemcpyAsync(h_outdata + p->nchan*p->nro*p->npe*t, d_indata[j], d_indatasize, cudaMemcpyDeviceToHost, stream[j]));
+            degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_outdata[j], d_indata[j],
+                p->in_dims.x, p->in_dims.c, p->out_dims.r, p->out_dims.theta, p->kernwidth, p->grid_oversamp, p->skip_angles, p->flags.golden_angle);
+            cuTry(cudaMemcpyAsync(h_outdata + p->out_dims.c*p->out_dims.r*p->out_dims.theta*z, d_indata[j], d_indatasize, cudaMemcpyDeviceToHost, stream[j]));
         }
 
     }

@@ -45,9 +45,6 @@
 #include "ra.h"
 
 
-#define DPRINT if(flag_verbose)printf
-#define dprint(expr,fmt)  do{ if(flag_verbose)printf(#expr " = %" #fmt "\n", expr) }while(0);
-
 
 // non-uniform data shape: nchan x nrep x nro x npe
 // uniform data shape:     nchan x nrep x ngrid x ngrid x nz
