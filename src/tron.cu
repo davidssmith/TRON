@@ -48,7 +48,7 @@
 #define NSTREAMS        2
 #define MULTI_GPU       0
 #define NCHAN           6
-#define MAXCHAN         16
+#define MAXCHAN         6
 #define MAX_RECON_CMDS  20
 static const int blocksize = 96;    // TWEAK: CUDA kernel parameters, optimize for your device
 static const int gridsize = 2048;
@@ -106,6 +106,7 @@ TRON_set_default_plan (TRON_plan *p)
     p->grid_oversamp = 2.f;
     p->data_undersamp = 1.f;
     p->kernwidth = 2.f;
+    p->nchunks = 1;;    // # of chunks to divide input data into for recon
 
     // BOOLEAN OPTIONS
     p->flags.adjoint = 0;
@@ -653,8 +654,9 @@ tron_init (TRON_plan *p)
   DPRINT("Kernels configured with %d blocks of %d threads\n", gridsize, blocksize);
 
   // array sizes
-  d_indatasize = dim_prod(&p->in_dims)*sizeof(float2);  // input data
-  d_outdatasize = dim_prod(&p->out_dims)*sizeof(float2); // multi-coil gridded data
+  // TODO: this is wrong.  d_indatasize should just be the size of the work slice
+  d_indatasize = dim_prod(&p->in_dims)*sizeof(float2) / p->nchunks;  // input data
+  d_outdatasize = dim_prod(&p->out_dims)*sizeof(float2) / p->nchunks; // multi-coil gridded data
 
   // TODO: eliminate these by simplifying data storage
   d_gridsize = ngridx*ngridy*sizeof(float2);  // single channel grid size
@@ -669,6 +671,7 @@ tron_init (TRON_plan *p)
 
   for (int j = 0; j < NSTREAMS; ++j) // allocate data and initialize apodization and kernel texture
   {
+      DPRINT("init STREAM %d\n", j);
       if (MULTI_GPU) cudaSetDevice(j % ndevices);
       cuTry(cudaStreamCreate(&stream[j]));
 
@@ -727,6 +730,7 @@ recon_radial_2d(float2 *h_outdata, const float2 *__restrict__ h_indata, TRON_pla
     tron_init(p);
     int ngridx = p->out_dims.x * p->grid_oversamp;
     int ngridy = p->out_dims.y * p->grid_oversamp;
+    dprint(p->out_dims.z, d);
 
     for (int z = 0; z < p->out_dims.z; ++z)
     {
@@ -738,15 +742,20 @@ recon_radial_2d(float2 *h_outdata, const float2 *__restrict__ h_indata, TRON_pla
         // address offsets into the data arrays
         size_t data_offset = p->in_dims.c * p->in_dims.r * peoffset;
         size_t img_offset = p->out_dims.x * p->out_dims.y * z;
-        dprint(img_offset,ld);
 
         printf("[dev %d, stream %d] reconstructing slice %d/%d from PEs %d-%d (offset %ld)\n",
             j%ndevices, j, z+1, p->out_dims.z, z*p->prof_slide, (z+1)*p->prof_slide-1, data_offset);
 
+        dprint(img_offset,ld);
+        dprint(data_offset,ld);
+        dprint(d_indatasize,ld);
+        dprint(stream[j], ld);
         cuTry(cudaMemcpyAsync(d_indata[j], h_indata + data_offset, d_indatasize, cudaMemcpyHostToDevice, stream[j]));
+        DPRINT("input data copied\n");
 
         if (p->flags.adjoint)
         {
+            DPRINT("performing ADJOINT\n");
             // reverse from non-uniform data to image
             precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_indata[j], p->in_dims.c, p->in_dims.r, p->prof_per_image, p->in_dims.theta);
             gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_outdata[j], d_indata[j],
@@ -755,13 +764,15 @@ recon_radial_2d(float2 *h_outdata, const float2 *__restrict__ h_indata, TRON_pla
             ifftwithshift(d_outdata[j], fft_plan_os[j], j, ngridx, p->out_dims.t*p->out_dims.c);
             crop<<<gridsize,blocksize,0,stream[j]>>>(d_tmp[j], p->out_dims.x, p->out_dims.y, d_outdata[j], ngridx, ngridy, p->in_dims.c);
             // TODO: look at in_dims.c vs out_dims.c to decide whether to coil combine and by how much (can compress)
-            coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_outdata[j], d_tmp[j], p->out_dims.x, p->in_dims.c, 1); // 0 works, 1 good, 3 optimal
-            //coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nimg, nchan);
-            deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_outdata[j], d_apod[j], p->out_dims.x, p->out_dims.y, 1);
+            coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_outdata[j], d_tmp[j], p->out_dims.x, p->in_dims.c, 1); /* 0 works, 1 good, 3 better */
+            //coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_outdata[j], d_tmp[j], nimg, nchan);
+            deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_outdata[j], d_apod[j], p->out_dims.x, p->out_dims.y, p->out_dims.c);
+            dprint(img_offset,ld);
             cuTry(cudaMemcpyAsync(h_outdata + img_offset, d_outdata[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
         }
         else
         {   // forward from image to non-uniform data
+            DPRINT("performing FORWARD\n");
             degrid_deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_indata[j], p->in_dims.x, 1, p->kernwidth, p->grid_oversamp);
             fftwithshift(d_indata[j], fft_plan_os[j], j, p->in_dims.x, p->in_dims.t*p->in_dims.c);
             //copy<<<gridsize,blocksize,0,stream[j]>>>(d_indata[j], d_img[j], nimg*nimg);
@@ -907,6 +918,8 @@ main (int argc, char *argv[])
         p.out_dims.phi = p.flags.koosh ? p.out_dims.z : 1;
         p.prof_per_image = p.out_dims.theta;
     }
+    p.nchunks = p.in_dims.n[3]*p.in_dims.n[4] / p.prof_per_image;
+    dprint(p.nchunks,d);
     h_outdatasize = sizeof(float2);
     for (int k = 0; k < 5; ++k)
         h_outdatasize *= p.out_dims.n[k];
