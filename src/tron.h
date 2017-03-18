@@ -44,44 +44,15 @@
 #include "mri.h"
 #include "ra.h"
 
-
-
-// non-uniform data shape: nchan x nrep x nro x npe
-// uniform data shape:     nchan x nrep x ngrid x ngrid x nz
-// image shape:            nchan x nrep x nimg x nimg x nz
-// coil-combined image:            nrep x nimg x nimg x nz
-
-
-typedef struct {
-    float grid_oversamp;  // TODO: compute ngrid from nx, ny and oversamp
-    float kernwidth;
-    float data_undersamp;
-
-    int prof_per_image;     // # of profiles to use for each reconstructed image; default: data_undersamp * nro
-    int prof_slide;         // # of profiles to slide through the data between reconstructed images
-    int skip_angles;        // # of angles to skip at beginning of image stack
-
-    dim_t in_dims;          // dimensions of input data from disk
-    dim_t out_dims;         // dimensions of final reconstructed image
-    dim_t chunk_dims;       // dimensions of working data set
-
-    int nchan;  // p->dims.c;
-    int nrep;  // p->dims.t; # of repeated measurements of same trajectory
-    int nro;
-    int npe;
-    int ngrid;   // p.out_dims.x * grid_oversamp;
-    int nx, ny, nz;
-    int nimg;
-
-    struct {
-        unsigned adjoint       : 1;
-        unsigned postcomp      : 1;
-        unsigned deapodize     : 1;
-        unsigned koosh         : 1;
-        unsigned golden_angle  : 5;   // padded to 8 bits
-    } flags;
-
-} TRON_plan;
+// CONFIGURATION PARAMETERS
+// TODO: softcode as many as possible
+#define NSTREAMS        2
+#define MULTI_GPU       0
+#define NCHAN           6
+#define MAXCHAN         6
+#define MAX_RECON_CMDS  20
+static const int blocksize = 96;    // TWEAK: CUDA kernel parameters, optimize for your device
+static const int gridsize = 2048;
 
 extern "C" {  // don't mangle name, so can call from other languages
 
