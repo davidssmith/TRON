@@ -71,7 +71,7 @@ __global__ void degridradial2d (
 /*  Reconstruct images from 2D radial data.  This host routine calls the appropriate
     CUDA kernels in the correct order depending on the direction of recon.   */
 __host__ void
-recon_radial_2d (float2 *h_outdata, const float2 *__restrict__ h_indata, TRON_plan *p);
+recon_radial_2d (float2 *h_outdata, const float2 *__restrict__ h_indata);
 
 }
 
