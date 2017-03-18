@@ -60,10 +60,10 @@ typedef struct {
     int prof_per_image;     // # of profiles to use for each reconstructed image; default: data_undersamp * nro
     int prof_slide;         // # of profiles to slide through the data between reconstructed images
     int skip_angles;        // # of angles to skip at beginning of image stack
-    int nchunks;
 
-    dim_t in_dims;
-    dim_t out_dims;
+    dim_t in_dims;          // dimensions of input data from disk
+    dim_t out_dims;         // dimensions of final reconstructed image
+    dim_t chunk_dims;       // dimensions of working data set
 
     int nchan;  // p->dims.c;
     int nrep;  // p->dims.t; # of repeated measurements of same trajectory
