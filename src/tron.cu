@@ -44,7 +44,7 @@
 
 #define MAX(a,b) ((a)>(b)?(a):(b))
 #define DPRINT if(flags.verbose)printf
-#define dprint(expr,fmt)  do{ if(flags.verbose)printf("%d: " #expr " = %" #fmt "\n", __LINE__, expr); }while(0);
+#define dprint(expr,fmt)  do{ if(flags.verbose)printf("\e[90m%d: " #expr " = %" #fmt "\e[0m\n", __LINE__, expr); }while(0);
 
 // MISC GLOBAL VARIABLES
 static cufftHandle fft_plan[NSTREAMS], fft_plan_os[NSTREAMS];
@@ -59,7 +59,6 @@ static size_t d_udatasize; // size in bytes of gridded data
 static size_t d_coilimgsize; // multi-coil image size
 static size_t d_imgsize; // coil-combined image size
 static size_t h_outdatasize;
-static size_t h_indatasize;
 
 // RECON CONFIGURATION
 static float grid_oversamp = 2.f;  // TODO: compute ngrid from nx, ny and oversamp
@@ -90,7 +89,7 @@ inline void
 gpuAssert (cudaError_t code, const char *file, int line, bool abort=true)
 {
     if (code != cudaSuccess) {
-        fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+        fprintf(stderr,"GPUassert: %s in %s at L%d\n", cudaGetErrorString(code), file, line);
         if (abort) { getchar(); exit(code); }
     }
 }
@@ -699,7 +698,6 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
 
     tron_init();
 
-
     for (int z = 0; z < nz; ++z)
     {
         int j = z % NSTREAMS; // j is stream index
@@ -708,7 +706,7 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
         int peoffset = z*prof_slide;
 
         // address offsets into the data arrays
-        size_t data_offset = nc * nt * nro * peoffset;
+        size_t data_offset = nc * nt * nro * peoffset;  // TODO: check this
         size_t img_offset = nt * nx * ny * z;
 
         printf("[dev %d, stream %d] reconstructing slice %d/%d from PEs %d-%d (offset %ld)\n",
@@ -719,9 +717,7 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
 
         if (flags.adjoint)
         {
-            //DPRINT("performing ADJOINT\n");
             cuTry(cudaMemcpyAsync(d_nudata[j], h_indata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
-            //DPRINT("input data copied\n");
             // reverse from non-uniform data to image
             precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nc*nt, nro, npe1work, npe1);
             gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j], nxos, nc*nt, nro, npe1work, kernwidth,
@@ -729,23 +725,24 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
             ifftwithshift(d_udata[j], fft_plan_os[j], j, nxos, nt*nc);
             crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nx, ny, d_udata[j], nxos, nyos, nc*nt);
             // TODO: look at indims.c vs outdims.c to decide whether to coil combine and by how much (can compress)
-            coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nx, nc, 1); /* 0 works, 1 good, 3 better */
+            coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nx, nc*nt, 1); /* 0 works, 1 good, 3 better */
             //coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_outdata[j], d_tmp[j], nimg, nchan);
-            deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nx, ny, nc);
-            // dprint(img_offset,ld);
-            // dprint(h_outdata,ld);
-            // dprint(d_imgsize,ld);
-            // dprint(d_img[j],ld);
+            deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nx, ny, nc*nt);
+            dprint(img_offset,ld);
+            dprint(h_outdata,ld);
+            dprint(d_imgsize,ld);
+            dprint(d_img[j],ld);
             // dprint(stream[j],ld);
-            // dprint(h_outdatasize,ld);
-            // dprint(h_outdata + img_offset,ld);
+            dprint(h_outdatasize,ld);
+//#ifdef CUDA_HOST_MALLOC
             cuTry(cudaMemcpyAsync(h_outdata + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
+//#else
+//        cuTry(cudaMemcpy(h_outdata + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost));
+//#endif
         }
         else
         {   // forward from image to non-uniform data
-            DPRINT("performing FORWARD\n");
             cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
-            DPRINT("input data copied\n");
             pad<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], nxos, d_img[j], nx, nc*nt);
             //degrid_deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_indata[j], nx, 1, kernwidth, grid_oversamp);
             fftwithshift(d_udata[j], fft_plan_os[j], j, nxos, nt*nc);
@@ -753,7 +750,11 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
 
             degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_udata[j],
                 nxos, nc*nt, nro, npe1, kernwidth, grid_oversamp, skip_angles, flags.golden_angle);
+#ifdef CUDA_HOST_MALLOC
             cuTry(cudaMemcpyAsync(h_outdata + nc*nt*nro*npe1*z, d_nudata[j], d_nudatasize, cudaMemcpyDeviceToHost, stream[j]));
+#else
+            cuTry(cudaMemcpyAsync(h_outdata + nc*nt*nro*npe1*z, d_nudata[j], d_nudatasize, cudaMemcpyDeviceToHost));
+#endif
         }
 
     }
@@ -770,16 +771,16 @@ void
 print_usage()
 {
     fprintf(stderr, "Usage: tron [-3ahuv] [-r cmds] [-d prof_slide] [-k width] [-o grid_oversamp] [-s skip_angles] [-u data_undersamp] <infile.ra> [outfile.ra]\n");
-    fprintf(stderr, "\t-3\t\t\3D koosh ball trajectory\n");
+    fprintf(stderr, "\t-3\t\t\t3D koosh ball trajectory\n");
     fprintf(stderr, "\t-a\t\t\tadjoint operation\n");
-    fprintf(stderr, "\t-d prof_slide\t\t\tnumber of phase encodes to slide between slices for helical scans\n");
+    fprintf(stderr, "\t-d prof_slide\t\tnumber of phase encodes to slide between slices for helical scans\n");
     fprintf(stderr, "\t-g\t\t\tgolden angle radial\n");
     fprintf(stderr, "\t-h\t\t\tshow this help\n");
     fprintf(stderr, "\t-k width\t\twidth of gridding kernel\n");
-    fprintf(stderr, "\t-o grid_oversamp\t\tgrid grid oversampling factor\n");
+    fprintf(stderr, "\t-o grid_oversamp\tgrid oversampling factor\n");
     fprintf(stderr, "\t-r nro\t\t\tnumber of readout points\n");
     fprintf(stderr, "\t-s skip_angles\t\tnumber of initial phase encodes to skip\n");
-    fprintf(stderr, "\t-u data_undersamp\t\tinput data undersampling factor\n");
+    fprintf(stderr, "\t-u data_undersamp\tinput data undersampling factor\n");
     fprintf(stderr, "\t-v\t\t\tverbose output\n");
 }
 
@@ -923,7 +924,6 @@ main (int argc, char *argv[])
 #else
     h_outdata = (float2*)malloc(h_outdatasize);
 #endif
-
 
     DPRINT("Running reconstruction ...\n ");
     clock_t start = clock();
