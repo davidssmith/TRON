@@ -52,8 +52,7 @@ static cudaStream_t stream[NSTREAMS];
 static int ndevices;
 
 // DEVICE ARRAYS AND SIZES
-static float2 *d_nudata[NSTREAMS], *d_udata[NSTREAMS],
-    *d_apod[NSTREAMS], *d_coilimg[NSTREAMS], *d_img[NSTREAMS];
+static float2 *d_nudata[NSTREAMS], *d_udata[NSTREAMS], *d_apod[NSTREAMS], *d_coilimg[NSTREAMS], *d_img[NSTREAMS];
 static size_t d_nudatasize; // size in bytes of non-uniform data
 static size_t d_udatasize; // size in bytes of gridded data
 static size_t d_coilimgsize; // multi-coil image size
@@ -230,7 +229,7 @@ coilcombinesos (float2 *img, const float2 * __restrict__ coilimg, const int nimg
 
 __global__ void
 coilcombinewalsh (float2 *img, const float2 * __restrict__ coilimg,
-   const int nimg, const int nchan, const int npatch)
+   const int nimg, const int nchan, const int nt, const int npatch)
 {
     float2 A[MAXCHAN*MAXCHAN];
     for (size_t id = blockIdx.x * blockDim.x + threadIdx.x; id < nimg*nimg; id += blockDim.x * gridDim.x)
@@ -386,6 +385,7 @@ deapodize (float2 *img, const float2 * __restrict__ apod, const int nx, const in
             img[nchan*id+c] *= apod[id].x; // took magnitude prior
 }
 
+
 __global__ void  // TODO: fix this
 degrid_deapodize (float2 *img, const int nimg, const int nchan,
     float kernwidth, float grid_oversamp)
@@ -421,11 +421,11 @@ degrid_deapodize (float2 *img, const int nimg, const int nchan,
 
 
 __global__ void
-precompensate (float2 *nudata, const int nchan, const int nro, const int npe_per_image, const int nrest)
+precompensate (float2 *nudata, const int nchan, const int nro, const int npe1work)
 {
-    float a = (2.f  - 2.f / float(npe_per_image)) / float(nro);
-    float b = 1.f / float(npe_per_image);
-    for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nrest; id += blockDim.x * gridDim.x)
+    float a = (2.f  - 2.f / float(npe1work)) / float(nro);
+    float b = 1.f / float(npe1work);
+    for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < npe1work; id += blockDim.x * gridDim.x)
         for (int r = 0; r < nro; ++r) {
             float sdc = a*fabsf(r - float(nro/2)) + b;
             for (int c = 0; c < nchan; ++c)
@@ -628,11 +628,6 @@ tron_init ()
   d_coilimgsize = nc*nt*nx*ny*sizeof(float2);
   d_imgsize = nt*nx*ny*sizeof(float2);
 
-  dprint(d_nudatasize,ld);
-  dprint(d_udatasize,ld);
-  dprint(d_coilimgsize,ld);
-  dprint(d_imgsize,ld);
-
   float2 *d_apodos;
   cuTry(cudaMalloc((void **)&d_apodos, d_udatasize));
   fillapod(d_apodos, nxos, nyos, kernwidth, grid_oversamp);
@@ -656,6 +651,7 @@ tron_init ()
       // TODO: only fill apod if depapodize is called
       // TODO: handle adjoint vs non-adjoint
       cuTry(cudaMalloc((void **)&d_apod[j], d_imgsize));
+      // TODO: can use only one d_apod for all streams?
       crop<<<nx,ny>>>(d_apod[j], nx, ny, d_apodos, nxos, nyos, 1);
   }
   cuTry(cudaFree(d_apodos));
@@ -712,32 +708,24 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
         printf("[dev %d, stream %d] reconstructing slice %d/%d from PEs %d-%d (offset %ld)\n",
             j%ndevices, j, z+1, nz, z*prof_slide, (z+1)*prof_slide-1, data_offset);
 
-        // dprint(img_offset,ld);
-        // dprint(data_offset,ld);
-
         if (flags.adjoint)
         {
             cuTry(cudaMemcpyAsync(d_nudata[j], h_indata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
             // reverse from non-uniform data to image
-            precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nc*nt, nro, npe1work, npe1);
+            precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nc*nt, nro, npe1work);
             gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j], nxos, nc*nt, nro, npe1work, kernwidth,
                 grid_oversamp, skip_angles+peoffset, flags.postcomp, flags.golden_angle);
             ifftwithshift(d_udata[j], fft_plan_os[j], j, nxos, nt*nc);
             crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nx, ny, d_udata[j], nxos, nyos, nc*nt);
             // TODO: look at indims.c vs outdims.c to decide whether to coil combine and by how much (can compress)
-            coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nx, nc*nt, 1); /* 0 works, 1 good, 3 better */
-            //coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_outdata[j], d_tmp[j], nimg, nchan);
-            deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nx, ny, nc*nt);
-            dprint(img_offset,ld);
-            dprint(h_outdata,ld);
-            dprint(d_imgsize,ld);
-            dprint(d_img[j],ld);
+            //coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j],d_coilimg[j], nx, nc, nt, 1); /* 0 works, 1 good, 3 better */
+            coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nx, nc);
+            deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nx, ny, nt);
             // dprint(stream[j],ld);
-            dprint(h_outdatasize,ld);
 //#ifdef CUDA_HOST_MALLOC
             cuTry(cudaMemcpyAsync(h_outdata + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
 //#else
-//        cuTry(cudaMemcpy(h_outdata + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost));
+        //cuTry(cudaMemcpy(h_outdata + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost));
 //#endif
         }
         else
@@ -883,7 +871,6 @@ main (int argc, char *argv[])
         npe2 = ra_in.dims[4];
         nx = nro / 2;
         ny = nro / 2;
-        nz = npe2;  // TODO: check this
         nxos = nx * grid_oversamp;
         nyos = ny * grid_oversamp;
         npe1work = data_undersamp * nro;  // TODO: fix this hack
@@ -917,6 +904,18 @@ main (int argc, char *argv[])
     ra_out.dims[1] = nc;
     assert(nc % 2 == 0 || nc == 1); // only single or even dimensions implemented for now
 
+dprint(nc,d);
+dprint(nt,d);
+dprint(nro,d);
+dprint(npe1,d);
+dprint(npe2,d);
+dprint(nx,d);
+dprint(ny,d);
+dprint(nz,d);
+dprint(nxos,d);
+dprint(nyos,d);
+dprint(nzos,d);
+dprint(npe1work,d);
 
 #ifdef CUDA_HOST_MALLOC
     // allocate pinned memory, which allows async calls
@@ -942,10 +941,8 @@ main (int argc, char *argv[])
     DPRINT("Cleaning up.\n");
     ra_free(&ra_in);
 #ifdef CUDA_HOST_MALLOC
-    //cudaFreeHost(&h_indata);
     cudaFreeHost(&h_outdata);
 #else
-    //free(h_indata);
     free(h_outdata);
 #endif
     cudaDeviceReset();
