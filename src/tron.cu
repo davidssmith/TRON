@@ -509,7 +509,7 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
         int y = zid % blocksizey + blocksizey*by;
         int id = x*ngrid + y; // computed linear array index for uniform data
         x = -x + ngrid/2;
-        y -= ngrid/2;
+        y = -y + ngrid/2;
         float gridpoint_radius = hypotf(float(x), float(y));
         int rmax = fminf(floorf(gridpoint_radius + kernwidth)/grid_oversamp, nro/2-1);
         int rmin = fmaxf(ceilf(gridpoint_radius - kernwidth)/grid_oversamp, 0);  // define a circular band around the uniform point
@@ -718,8 +718,8 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
             ifftwithshift(d_udata[j], fft_plan_os[j], j, nxos, nt*nc);
             crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nx, ny, d_udata[j], nxos, nyos, nc*nt);
             // TODO: look at indims.c vs outdims.c to decide whether to coil combine and by how much (can compress)
-            //coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j],d_coilimg[j], nx, nc, nt, 1); /* 0 works, 1 good, 3 better */
-            coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nx, nc);
+            coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j],d_coilimg[j], nx, nc, nt, 1); /* 0 works, 1 good, 3 better */
+            //coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nx, nc);
             deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nx, ny, nt);
             // dprint(stream[j],ld);
 #ifdef CUDA_HOST_MALLOC
@@ -872,8 +872,8 @@ main (int argc, char *argv[])
         npe2 = ra_in.dims[4];
         nx = nro / 2;
         ny = nro / 2;
-        nxos = nx * grid_oversamp;
-        nyos = ny * grid_oversamp;
+        nxos = 2 * nx * grid_oversamp;
+        nyos = 2 * ny * grid_oversamp;
         npe1work = data_undersamp * nro;  // TODO: fix this hack
         if (flags.koosh) {
             nz = nro / 2;
