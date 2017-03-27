@@ -722,11 +722,11 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
             coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nx, nc);
             deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nx, ny, nt);
             // dprint(stream[j],ld);
-//#ifdef CUDA_HOST_MALLOC
+#ifdef CUDA_HOST_MALLOC
             cuTry(cudaMemcpyAsync(h_outdata + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
-//#else
-        //cuTry(cudaMemcpy(h_outdata + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost));
-//#endif
+#else
+            cuTry(cudaMemcpy(h_outdata + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost));
+#endif
         }
         else
         {   // forward from image to non-uniform data
@@ -851,15 +851,16 @@ main (int argc, char *argv[])
     DPRINT("Sanity check: indata[0] = %f + %f i\n", h_indata[0].x, h_indata[0].y);
     DPRINT("indims = {%lu, %lu, %lu, %lu, %lu}\n", ra_in.dims[0], ra_in.dims[1], ra_in.dims[2], ra_in.dims[3], ra_in.dims[4]);
 
+
+    printf("WARNING: Assuming square Cartesian dimensions for now.\n");
+
+    ra_out.ndims = 5;
+    ra_out.dims = (uint64_t*) malloc(ra_out.ndims*sizeof(uint64_t));
+    ra_out.dims[0] = 1;
+    ra_out.dims[1] = 1;
     ra_out.flags = 0;
     ra_out.eltype = 4;
     ra_out.elbyte = 8;
-    ra_out.size = h_outdatasize;
-    ra_out.ndims = 5;
-    ra_out.dims = (uint64_t*) malloc(ra_out.ndims*sizeof(uint64_t));
-
-
-    printf("WARNING: Assuming square Cartesian dimensions for now.\n");
 
     // HERE IS WHERE WE COMPUTE OUTPUT DIMENSIONS BASED ON INPUT AND OPTIONAL ARGS
     if (flags.adjoint)
@@ -900,8 +901,8 @@ main (int argc, char *argv[])
         ra_out.dims[4] = npe2;
         h_outdatasize = 1*nt*nro*npe1*npe2*sizeof(float2);
     }
-    ra_out.dims[0] = 1;
-    ra_out.dims[1] = nc;
+    ra_out.size = h_outdatasize;
+
     assert(nc % 2 == 0 || nc == 1); // only single or even dimensions implemented for now
 
 dprint(nc,d);
