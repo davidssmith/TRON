@@ -27,9 +27,9 @@ w = whos('data');
 elbytes = w.bytes / numel(data);
 if isinteger(data)
     if strfind(w.class, 'uint')
-        eltype = 2;
+        eltype = uint64(2);
     else
-        eltype = 1;
+        eltype = uint64(1);
     end
 elseif isfloat(data)
     if w.complex
@@ -48,12 +48,12 @@ else
     eltype = 0;
 end
 f = fopen(filename,'w');
-flags = 0;
-filemagic = 8746397786917265778;
+flags = uint64(0);
+filemagic = uint64(8746397786917265778);
 nd = ndims(data);
 if w.complex, nd = nd -1; end
 dims = size(data);
 if w.complex, dims = dims(2:end); end
 fwrite(f, [filemagic, flags, eltype, elbytes, w.bytes, nd, dims], 'uint64');
-fwrite(f, data, w.class);
+fwrite(f, data(:), w.class);
 fclose(f);

@@ -44,7 +44,7 @@
 
 #define MAX(a,b) ((a)>(b)?(a):(b))
 #define DPRINT if(flags.verbose)printf
-#define dprint(expr,fmt)  do{ if(flags.verbose)printf("\e[90m%d: " #expr " = %" #fmt "\e[0m\n", __LINE__, expr); }while(0);
+#define dprint(expr,fmt)  do{ if(flags.verbose)fprintf(stderr,"\e[90m%d: " #expr " = %" #fmt "\e[0m\n", __LINE__, expr); }while(0);
 
 // MISC GLOBAL VARIABLES
 static cufftHandle fft_plan[NSTREAMS], fft_plan_os[NSTREAMS];
@@ -60,7 +60,7 @@ static size_t d_imgsize; // coil-combined image size
 static size_t h_outdatasize;
 
 // RECON CONFIGURATION
-static float grid_oversamp = 2.f;  // TODO: compute ngrid from nx, ny and oversamp
+static float grid_oversamp = 1.25f;  // TODO: compute ngrid from nx, ny and oversamp
 static float kernwidth = 2.f;
 static float data_undersamp = 1.f;
 
@@ -482,37 +482,37 @@ extern "C" {  // don't mangle name, so can call from other languages
     grid a single 2D image from input radial data
 */
 __global__ void
-gridradial2d (float2 *udata, const float2 * __restrict__ nudata, const int ngrid,
+gridradial2d (float2 *udata, const float2 * __restrict__ nudata, const int nxos,
     const int nchan, const int nro, const int npe, const float kernwidth, const float grid_oversamp,
 const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
 {
     // udata: [NCHAN x NGRID x NGRID], nudata: NCHAN x NRO x NPE
-    //float grid_oversamp = float(ngrid) / float(nro); // grid_oversampling factor
+    //float grid_oversamp = float(nxos) / float(nro); // grid_oversampling factor
     float2 utmp[MAXCHAN];
     const int blocksizex = 8; // TODO: optimize this blocking
     const int blocksizey = 4;
     const int warpsize = blocksizex*blocksizey;
-    //int nblockx = ngrid / blocksizex;
-    int nblocky = ngrid / blocksizey; // # of blocks along y dimension
-    for (int tid = blockIdx.x * blockDim.x + threadIdx.x; tid < ngrid*ngrid; tid += blockDim.x * gridDim.x)
+    //int nblockx = nxos / blocksizex;
+    int nblocky = nxos / blocksizey; // # of blocks along y dimension
+    for (int tid = blockIdx.x * blockDim.x + threadIdx.x; tid < nxos*nxos; tid += blockDim.x * gridDim.x)
     {
         for (int ch = 0; ch < nchan; ch++)
           utmp[ch] = make_float2(0.f,0.f);
 
-        //int x = id / ngrid - ngrid/2;
-        //int y = -(id % ngrid) + ngrid/2;
+        //int x = id / nxos - nxos/2;
+        //int y = -(id % nxos) + nxos/2;
         int z = tid / warpsize; // not a real z, just a block label
         int bx = z / nblocky;
         int by = z % nblocky;
         int zid = tid % warpsize;
         int x = zid / blocksizey + blocksizex*bx;
         int y = zid % blocksizey + blocksizey*by;
-        int id = x*ngrid + y; // computed linear array index for uniform data
-        x = -x + ngrid/2;
-        y = -y + ngrid/2;
+        int id = x*nxos + y; // computed linear array index for uniform data
+        x = -x + nxos/2;
+        y = -y + nxos/2;
         float gridpoint_radius = hypotf(float(x), float(y));
-        int rmax = fminf(floorf(gridpoint_radius + kernwidth)/grid_oversamp, nro/2-1);
-        int rmin = fmaxf(ceilf(gridpoint_radius - kernwidth)/grid_oversamp, 0);  // define a circular band around the uniform point
+        int rmax = fminf(floorf(gridpoint_radius + kernwidth), nro/2-1);
+        int rmin = fmaxf(ceilf(gridpoint_radius - kernwidth), 0);  // define a circular band around the uniform point
         for (int ch = 0; ch < nchan; ++ch)
              udata[nchan*id + ch] = make_float2(0.f,0.f);
         if (rmin > nro/2-1) continue; // outside non-uniform data area
@@ -539,8 +539,8 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
             {
                 float sf, cf;
                 __sincosf(profile_theta, &sf, &cf);
-                sf *= grid_oversamp;
-                cf *= grid_oversamp;
+                //sf *= grid_oversamp;
+                //cf *= grid_oversamp;
                 // TODO: fix this logic, try using without dtheta1
                 //int rstart = dtheta1 <= dtheta || dtheta3 <= dtheta ? rmin : -rmax;
                 //int rend   = dtheta1 <= dtheta || dtheta3 <= dtheta ? rmax : -rmin;
@@ -549,8 +549,8 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
                 for (int r = rstart; r <= rend; ++r)  // for each POSITIVE non-uniform ro point
                 for (int r = rstart; r <= rend; ++r)  // for each POSITIVE non-uniform ro point
                 {
-                    float kx = r*cf; // [-NGRID/2 ... NGRID/2-1]    // TODO: compute distance in radial coordinates?
-                    float ky = r*sf; // [-NGRID/2 ... NGRID/2-1]
+                    float kx = r*cf; // [-nxos/2 ... nxos/2-1]    // TODO: compute distance in radial coordinates?
+                    float ky = r*sf; // [-nyos/2 ... nyos/2-1]
                     float wgt = gridkernel(kx - x, ky - y, kernwidth, grid_oversamp);
                     if (flag_postcomp)
                       sdc += wgt;
@@ -663,21 +663,11 @@ tron_shutdown()
     DPRINT("freeing device memory\n");
     for (int j = 0; j < NSTREAMS; ++j) { // free allocated memory
         if (MULTI_GPU) cudaSetDevice(j % ndevices);
-
         cuTry(cudaFree(d_udata[j]));
-        dprint(d_udata[j],ld);
-
         cuTry(cudaFree(d_nudata[j]));
-        dprint(d_nudata[j],ld);
-
         cuTry(cudaFree(d_coilimg[j]));
-        dprint(d_coilimg[j],ld);
-
         cuTry(cudaFree(d_img[j]));
-        dprint(d_img[j],ld);
-
         cuTry(cudaFree(d_apod[j]));
-                dprint(d_apod[j],ld);
         cudaStreamDestroy(stream[j]);
     }
     DPRINT("done freeing\n");
@@ -857,7 +847,6 @@ main (int argc, char *argv[])
     ra_out.ndims = 5;
     ra_out.dims = (uint64_t*) malloc(ra_out.ndims*sizeof(uint64_t));
     ra_out.dims[0] = 1;
-    ra_out.dims[1] = 1;
     ra_out.flags = 0;
     ra_out.eltype = 4;
     ra_out.elbyte = 8;
@@ -872,8 +861,8 @@ main (int argc, char *argv[])
         npe2 = ra_in.dims[4];
         nx = nro / 2;
         ny = nro / 2;
-        nxos = 2 * nx * grid_oversamp;
-        nyos = 2 * ny * grid_oversamp;
+        nxos = nx * grid_oversamp;
+        nyos = ny * grid_oversamp;
         npe1work = data_undersamp * nro;  // TODO: fix this hack
         if (flags.koosh) {
             nz = nro / 2;
@@ -883,6 +872,7 @@ main (int argc, char *argv[])
             nzos = 1;
         }
         npe2work = npe2;
+        ra_out.dims[1] = nt;
         ra_out.dims[2] = nx;
         ra_out.dims[3] = ny;
         ra_out.dims[4] = nz;
@@ -891,15 +881,23 @@ main (int argc, char *argv[])
     else
     {
         // TODO: this is broken probably
+        nc = ra_in.dims[0];
+        nt = ra_in.dims[1];
+        nx = ra_in.dims[2];
+        ny = ra_in.dims[3];
+        nz = ra_in.dims[4];
+        nxos = nx;
+        nyos = ny;
+        nzos = nz;
         npe1work = 2 * data_undersamp * nx;  // TODO: fix this hack
-        nc = 1;
         nro = nx * 2;  // TODO: implement non-square images
         npe1 = nro;   // TODO: make this more customizable
         npe2 = flags.koosh ? nz : 1;
+        ra_out.dims[1] = nt;
         ra_out.dims[2] = nro;
         ra_out.dims[3] = npe1;
         ra_out.dims[4] = npe2;
-        h_outdatasize = 1*nt*nro*npe1*npe2*sizeof(float2);
+        h_outdatasize = nc*nt*nro*npe1*npe2*sizeof(float2);
     }
     ra_out.size = h_outdatasize;
 
@@ -917,6 +915,7 @@ dprint(nxos,d);
 dprint(nyos,d);
 dprint(nzos,d);
 dprint(npe1work,d);
+
 
 #ifdef CUDA_HOST_MALLOC
     // allocate pinned memory, which allows async calls

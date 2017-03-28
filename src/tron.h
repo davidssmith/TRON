@@ -46,7 +46,7 @@
 
 // CONFIGURATION PARAMETERS
 // TODO: softcode as many as possible
-#define NSTREAMS        2
+#define NSTREAMS        4
 #define MULTI_GPU       0
 #define NCHAN           6
 #define MAXCHAN         6

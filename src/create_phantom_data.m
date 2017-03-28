@@ -62,8 +62,9 @@ K = reshape(traj(1:2,:,:), 2, []).';
 st = nufft_init(K, [N N], wg*[2 2], osf*[N N], [N/2 N/2]);
 data = nufft(image, st);
 data = reshape(data, nro, npe) / nro / npe;
-data2 = zeros(1,1,nro,npe);
-data2(1,1,:,:) = data;
+data2 = zeros(1,1,1,nro,npe);
+data2(1,1,1,:,:) = data;
+size(shiftdim(data2,1))
 rawrite(single(data2), 'sl_data_irt.ra');
 clear data2;
 data = data .* w;

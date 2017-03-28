@@ -1,5 +1,5 @@
 CC=nvcc
-CFLAGS=-O3 -g -G -Wno-deprecated-gpu-targets --use_fast_math -D_FORCE_INLINES -DKERN_KB -DCUDA_HOST_MALLOC
+CFLAGS=-O3 -g -G -Wno-deprecated-gpu-targets --use_fast_math -D_FORCE_INLINES -DKERN_KB #-DCUDA_HOST_MALLOC
 LFLAGS=-lcufft
 
 objects = tron.o ra.o
