@@ -66,43 +66,39 @@ G = gpuNUFFT(Kgn/2/pi,w,osf,wg,sw,[N,N],[],true);
 
 
 %% Everyone degrids
-data_irt = nufft(image, st) / nro / npe;
+data_irt = reshape(nufft(image, st),1,1, nro,npe) / nro / npe;
 rawrite(single(data_irt), 'sl_data_irt.ra', 1);
 
-data_gn = G*image(:);
+data_gn = reshape(G*image(:), 1, 1, nro, npe);
 rawrite(single(data_gn), 'sl_data_gn.ra', 1);
 
-data_bart = bart('nufft -c', traj*nro/4/pi, image);
+data_bart = reshape(bart('nufft -c', traj*nro/4/pi, image), 1, 1, nro, npe);
 rawrite(single(data_bart), 'sl_data_bart.ra', 1);
 
 !./tron -v ../data/shepplogan.ra sl_data_tron.ra 
-data_tron = double(squeeze(raread('sl_data_tron.ra')));
-data_tron = data_tron(:);
+data_tron = double(raread('sl_data_tron.ra'));
 
-%% Apply SDC and convert to double
-data_irt = double(data_irt(:)) .* w(:);
-data_gn = double(data_gn(:)) .* w(:);
-data_bart = double(data_bart(:)) .* w(:);
-data_tron = double(data_tron(:)) .* w(:);
+%% Convert to double
+data_gn = double(data_gn);
+data_bart = double(data_bart);
 
 %% Everyone grids everyone else
 
 
-image_irt_irt = real(nufft_adj(data_irt, st));
-image_gn_irt = real(nufft_adj(data_gn .* w(:), st));
-image_bart_irt = real(nufft_adj(data_bart .* w(:), st));
-image_tron_irt = real(nufft_adj(data_tron .* w(:), st));
+image_irt_irt = real(nufft_adj(data_irt(:) .* w(:), st));
+image_gn_irt = real(nufft_adj(data_gn(:) .* w(:), st));
+image_bart_irt = real(nufft_adj(data_bart(:) .* w(:), st));
+image_tron_irt = real(nufft_adj(data_tron(:) .* w(:), st));
 
-image_irt_gn = reshape(real(G'*data_irt), N, N) / wg^3;
-image_gn_gn = reshape(real(G'*data_gn), N, N) / wg^3;
-image_bart_gn = reshape(real(G'*data_bart), N, N) / wg^3;
-image_tron_gn = reshape(real(G'*data_tron), N, N) / wg^3;
+image_irt_gn = reshape(real(G'*(data_irt(:) .* w(:))), N, N) / wg^3;
+image_gn_gn = reshape(real(G'*(data_gn(:) .* w(:))), N, N) / wg^3;
+image_bart_gn = reshape(real(G'*(data_bart(:) .* w(:))), N, N) / wg^3;
+image_tron_gn = reshape(real(G'*(data_tron(:) .* w(:))), N, N) / wg^3;
 
-
-image_irt_bart = bart('nufft -a', traj*nro/4/pi, data_irt) / pi;
-image_gn_bart = bart('nufft -a', traj*nro/4/pi, data_gn) / pi;
-image_bart_bart = bart('nufft -a', traj*nro/4/pi, data_bart) / pi;
-image_tron_bart = bart('nufft -a', traj*nro/4/pi, data_tron) / pi;
+image_irt_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_irt,1,nro,npe)) / pi;
+image_gn_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_gn,1,nro,npe)) / pi;
+image_bart_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_bart,1,nro,npe)) / pi;
+image_tron_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_tron,1,nro,npe)) / pi;
 
 !./tron -a -v sl_data_irt.ra  sl_irt_tron.ra
 !./tron -a -v sl_data_gn_ra   sl_gn_tron.ra
