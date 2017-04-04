@@ -22,7 +22,10 @@
 % OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 % SOFTWARE.
 
-function rawrite(data, filename)
+function rawrite(data, filename, ntrailing)
+if nargin < 3
+    ntrailing = 0;
+end
 w = whos('data');
 elbytes = w.bytes / numel(data);
 if isinteger(data)
@@ -50,9 +53,9 @@ end
 f = fopen(filename,'w');
 flags = uint64(0);
 filemagic = uint64(8746397786917265778);
-nd = ndims(data);
+nd = ndims(data) + ntrailing;
 if w.complex, nd = nd -1; end
-dims = size(data);
+dims = [size(data) ones(1,ntrailing)];
 if w.complex, dims = dims(2:end); end
 fwrite(f, [filemagic, flags, eltype, elbytes, w.bytes, nd, dims], 'uint64');
 fwrite(f, data(:), w.class);
