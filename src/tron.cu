@@ -719,7 +719,7 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
         {   // forward from image to non-uniform data
             cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
             pad<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], nxos, d_img[j], nx, nc*nt);
-            //degrid_deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_indata[j], nx, 1, kernwidth, grid_oversamp);
+            //degrid_deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], nxos, 1, kernwidth, grid_oversamp);
             fftwithshift(d_udata[j], fft_plan_os[j], j, nxos, nt*nc);
             //copy<<<gridsize,blocksize,0,stream[j]>>>(d_indata[j], d_img[j], nimg*nimg);
 

@@ -115,12 +115,15 @@ image_tron_tron = squeeze(raread('sl_tron_tron.ra'));
 
 x = [squeeze(data_irt).*w squeeze(data_gn).*w squeeze(data_bart).*w squeeze(data_tron).*w];
 figure(1);
-imagesc(abs(x));
+imagesc(log(abs(squeeze(data_tron))));
+figure(2);
+imagesc(log(abs(squeeze(data_irt))));
 
+%%
 x = [image_irt_irt image_gn_irt image_bart_irt image_tron_irt;
     image_irt_gn image_gn_gn image_bart_gn image_tron_gn;
     image_irt_bart image_gn_bart/nro/npe image_bart_bart/nro/npe image_tron_bart];
-%%
+
 %    image_irt_tron/nro/npe image_gn_tron/nro/npe image_bart_tron/nro/npe image_tron_tron];
 figure(2);
 imagesc(abs(x));
