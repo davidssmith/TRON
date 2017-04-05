@@ -60,12 +60,12 @@ static size_t d_imgsize; // coil-combined image size
 static size_t h_outdatasize;
 
 // RECON CONFIGURATION
-static float grid_oversamp = 1.25f;  // TODO: compute ngrid from nx, ny and oversamp
+static float grid_oversamp = 2.f;  // TODO: compute ngrid from nx, ny and oversamp
 static float kernwidth = 2.f;
 static float data_undersamp = 1.f;
 
-static int prof_slide;         // # of profiles to slide through the data between reconstructed images
-static int skip_angles;        // # of angles to skip at beginning of image stack
+static int prof_slide = 0;         // # of profiles to slide through the data between reconstructed images
+static int skip_angles = 0;        // # of angles to skip at beginning of image stack
 
 static int nc;  //  # of receive channels;
 static int nt;  // # of repeated measurements of same trajectory
@@ -152,9 +152,6 @@ __host__ void
 fft_init(cufftHandle *plan, const int nx, const int ny, const int nchan)
 {
   DPRINT("fft_init\n");
-  dprint(nx,d);
-  dprint(ny,d);
-  dprint(nchan,d);
   // setup FFT
   const int rank = 2;
   int idist = 1, odist = 1, istride = nchan, ostride = nchan;
@@ -864,11 +861,13 @@ main (int argc, char *argv[])
         nxos = nx * grid_oversamp;
         nyos = ny * grid_oversamp;
         npe1work = data_undersamp * nro;  // TODO: fix this hack
+        if (prof_slide == 0)
+            prof_slide = npe1work;
         if (flags.koosh) {
             nz = nro / 2;
             nzos = nz * grid_oversamp;
         } else {
-            nz = (npe1 - npe1work) / prof_slide;
+            nz = 1 + (npe1 - npe1work) / prof_slide;
             nzos = 1;
         }
         npe2work = npe2;
@@ -886,13 +885,19 @@ main (int argc, char *argv[])
         nx = ra_in.dims[2];
         ny = ra_in.dims[3];
         nz = ra_in.dims[4];
-        nxos = nx;
-        nyos = ny;
-        nzos = nz;
+        nxos = grid_oversamp*nx;
+        nyos = grid_oversamp*ny;
+        nzos = grid_oversamp*nz;
         npe1work = 2 * data_undersamp * nx;  // TODO: fix this hack
         nro = nx * 2;  // TODO: implement non-square images
         npe1 = nro;   // TODO: make this more customizable
-        npe2 = flags.koosh ? nz : 1;
+        if (flags.koosh) {
+            npe2 = nz;
+            nzos = grid_oversamp*nz;
+        } else {
+            npe2 = 1;
+            nzos = 1;
+        }
         ra_out.dims[1] = nt;
         ra_out.dims[2] = nro;
         ra_out.dims[3] = npe1;
@@ -900,7 +905,7 @@ main (int argc, char *argv[])
         h_outdatasize = nc*nt*nro*npe1*npe2*sizeof(float2);
     }
     ra_out.size = h_outdatasize;
-
+    dprint(h_outdatasize,ld);
     assert(nc % 2 == 0 || nc == 1); // only single or even dimensions implemented for now
 
 dprint(nc,d);

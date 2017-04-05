@@ -66,13 +66,13 @@ G = gpuNUFFT(Kgn/2/pi,w,osf,wg,sw,[N,N],[],true);
 
 
 %% Everyone degrids
-data_irt = reshape(nufft(image, st),1,1, nro,npe) / nro / npe;
+data_irt = reshape(nufft(image, st),1,1, nro,npe) / nro/npe;
 rawrite(single(data_irt), 'sl_data_irt.ra', 1);
 
-data_gn = reshape(G*image(:), 1, 1, nro, npe);
+data_gn = reshape(G*image(:), 1, 1, nro, npe) / sqrt(nro*npe);
 rawrite(single(data_gn), 'sl_data_gn.ra', 1);
 
-data_bart = reshape(bart('nufft -c', traj*nro/4/pi, image), 1, 1, nro, npe);
+data_bart = reshape(bart('nufft -c', traj*nro/4/pi, image), 1, 1, nro, npe) / sqrt(nro*npe);
 rawrite(single(data_bart), 'sl_data_bart.ra', 1);
 
 !./tron -v ../data/shepplogan.ra sl_data_tron.ra 
@@ -95,30 +95,35 @@ image_gn_gn = reshape(real(G'*(data_gn(:) .* w(:))), N, N) / wg^3;
 image_bart_gn = reshape(real(G'*(data_bart(:) .* w(:))), N, N) / wg^3;
 image_tron_gn = reshape(real(G'*(data_tron(:) .* w(:))), N, N) / wg^3;
 
-image_irt_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_irt,1,nro,npe)) / pi;
-image_gn_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_gn,1,nro,npe)) / pi;
-image_bart_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_bart,1,nro,npe)) / pi;
-image_tron_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_tron,1,nro,npe)) / pi;
+image_irt_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_irt(:).*w(:),1,nro,npe)) / pi;
+image_gn_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_gn(:).*w(:),1,nro,npe)) / pi;
+image_bart_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_bart(:).*w(:),1,nro,npe)) / pi;
+image_tron_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_tron(:).*w(:),1,nro,npe)) / pi;
 
 !./tron -a -v sl_data_irt.ra  sl_irt_tron.ra
 !./tron -a -v sl_data_gn_ra   sl_gn_tron.ra
 !./tron -a -v sl_data_bart.ra sl_bart_tron.ra
 !./tron -a -v sl_data_tron.ra sl_tron_tron.ra
-image_irt_tron = raread('sl_irt_tron.ra');
-image_gn_tron = raread('sl_gn_tron.ra');
-image_bart_tron = raread('sl_bart_tron.ra');
-image_tron_tron = raread('sl_tron_tron.ra');
+image_irt_tron = squeeze(raread('sl_irt_tron.ra'));
+image_gn_tron = squeeze(raread('sl_gn_tron.ra'));
+image_bart_tron = squeeze(raread('sl_bart_tron.ra'));
+image_tron_tron = squeeze(raread('sl_tron_tron.ra'));
 
 
 
 %% Plot everything
 
+x = [squeeze(data_irt).*w squeeze(data_gn).*w squeeze(data_bart).*w squeeze(data_tron).*w];
+figure(1);
+imagesc(abs(x));
+
 x = [image_irt_irt image_gn_irt image_bart_irt image_tron_irt;
     image_irt_gn image_gn_gn image_bart_gn image_tron_gn;
-    image_irt_bart image_gn_bart image_bart_bart image_tron_bart;
-    image_irt_tron image_gn_tron image_bart_tron image_tron_tron];
-figure(1);
-imagesc(x);
+    image_irt_bart image_gn_bart/nro/npe image_bart_bart/nro/npe image_tron_bart];
+%%
+%    image_irt_tron/nro/npe image_gn_tron/nro/npe image_bart_tron/nro/npe image_tron_tron];
+figure(2);
+imagesc(abs(x));
 
 
 
