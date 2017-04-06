@@ -574,15 +574,16 @@ __global__ void
 degridradial2d (
     float2 *nudata, const float2 * __restrict__ udata, const int nimg,
     const int nchan, const int nro, const int npe, const float kernwidth,
-    const float grid_oversamp, const int skip_angles, const int flag_golden_angle)
+    const int skip_angles, const int flag_golden_angle)
 {
+    const float grid_oversamp = 1.f;
     // udata: [NCHAN x NGRID x NGRID], nudata: NCHAN x NRO x NPE
     //float grid_oversamp = float(ngrid) / float(nro); // grid_oversampling factor
     for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nro*npe; id += blockDim.x * gridDim.x)
     {
         int pe = id / nro; // find my location in the non-uniform data
         int ro = id % nro;
-        float r = (ro - 0.5f * nro )/ (float)(nro); // [-0.5,0.5-1/nro] convert indices to (r,theta) coordinates
+        float r = ro/(float)(nro) - 0.5f; // [-0.5,0.5-1/nro] convert indices to (r,theta) coordinates
         float t = flag_golden_angle ? modang(PHI*(pe + skip_angles)) : float(pe) * M_PI / float(npe)+ M_PI/2;
         float kx = r*cos(t); // [-0.5,0.5-1/nro] Cartesian freqs of non-Cart datum  // TODO: _sincosf?
         float ky = r*sin(t); // [-0.5,0.5-1/nro]
@@ -717,14 +718,14 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
         }
         else
         {   // forward from image to non-uniform data
-            cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
-            pad<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], nxos, d_img[j], nx, nc*nt);
-            //degrid_deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], nxos, 1, kernwidth, grid_oversamp);
-            fftwithshift(d_udata[j], fft_plan_os[j], j, nxos, nt*nc);
+            cuTry(cudaMemcpyAsync(d_udata[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
+            //pad<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], nxos, d_img[j], nx, nc*nt);
+            //degrid_deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], nx, 1, kernwidth, grid_oversamp);
+            fftwithshift(d_udata[j], fft_plan[j], j, nx, nt*nc);
             //copy<<<gridsize,blocksize,0,stream[j]>>>(d_indata[j], d_img[j], nimg*nimg);
 
             degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_udata[j],
-                nxos, nc*nt, nro, npe1, kernwidth, grid_oversamp, skip_angles, flags.golden_angle);
+                nx, nc*nt, nro, npe1, kernwidth, skip_angles, flags.golden_angle);
 #ifdef CUDA_HOST_MALLOC
             cuTry(cudaMemcpyAsync(h_outdata + nc*nt*nro*npe1*z, d_nudata[j], d_nudatasize, cudaMemcpyDeviceToHost, stream[j]));
 #else
@@ -889,7 +890,7 @@ main (int argc, char *argv[])
         nyos = grid_oversamp*ny;
         nzos = grid_oversamp*nz;
         npe1work = 2 * data_undersamp * nx;  // TODO: fix this hack
-        nro = nx * 2;  // TODO: implement non-square images
+        nro = 2*nx;  // TODO: implement non-square images
         npe1 = nro;   // TODO: make this more customizable
         if (flags.koosh) {
             npe2 = nz;

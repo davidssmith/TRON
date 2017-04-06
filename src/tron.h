@@ -65,7 +65,7 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle);
 __global__ void degridradial2d (
     float2 *nudata, const float2 * __restrict__ udata, const int nimg,
     const int nchan, const int nro, const int npe, const float kernwidth,
-    const float grid_oversamp, const int skip_angles, const int flag_golden_angle);
+    const int skip_angles, const int flag_golden_angle);
 
 /*  Reconstruct images from 2D radial data.  This host routine calls the appropriate
     CUDA kernels in the correct order depending on the direction of recon.   */
