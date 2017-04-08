@@ -52,7 +52,7 @@ static cudaStream_t stream[NSTREAMS];
 static int ndevices;
 
 // DEVICE ARRAYS AND SIZES
-static float2 *d_nudata[NSTREAMS], *d_udata[NSTREAMS], *d_apod[NSTREAMS], *d_coilimg[NSTREAMS], *d_img[NSTREAMS];
+static float2 *d_nudata[NSTREAMS], *d_udata[NSTREAMS], *d_apod[NSTREAMS], *d_apodos[NSTREAMS], *d_coilimg[NSTREAMS], *d_img[NSTREAMS];
 static size_t d_nudatasize; // size in bytes of non-uniform data
 static size_t d_udatasize; // size in bytes of gridded data
 static size_t d_coilimgsize; // multi-coil image size
@@ -621,10 +621,6 @@ tron_init ()
   d_coilimgsize = nc*nt*nx*ny*sizeof(float2);
   d_imgsize = nt*nx*ny*sizeof(float2);
 
-  float2 *d_apodos;
-  cuTry(cudaMalloc((void **)&d_apodos, d_udatasize));
-  fillapod(d_apodos, nxos, nyos, kernwidth, grid_oversamp);
-
   for (int j = 0; j < NSTREAMS; ++j) // allocate data and initialize apodization and kernel texture
   {
       DPRINT("init STREAM %d\n", j);
@@ -644,10 +640,14 @@ tron_init ()
       // TODO: only fill apod if depapodize is called
       // TODO: handle adjoint vs non-adjoint
       cuTry(cudaMalloc((void **)&d_apod[j], d_imgsize));
+      cuTry(cudaMalloc((void **)&d_apodos[j], d_udatasize));
+      fillapod(d_apodos[j], nxos, nyos, kernwidth, grid_oversamp);
+
       // TODO: can use only one d_apod for all streams?
-      crop<<<nx,ny>>>(d_apod[j], nx, ny, d_apodos, nxos, nyos, 1);
+      crop<<<nx,ny>>>(d_apod[j], nx, ny, d_apodos[j], nxos, nyos, 1);
+      
+      
   }
-  cuTry(cudaFree(d_apodos));
 }
 
 void
@@ -661,6 +661,7 @@ tron_shutdown()
         cuTry(cudaFree(d_coilimg[j]));
         cuTry(cudaFree(d_img[j]));
         cuTry(cudaFree(d_apod[j]));
+        cuTry(cudaFree(d_apodos[j]));
         cudaStreamDestroy(stream[j]);
     }
     DPRINT("done freeing\n");
@@ -714,8 +715,8 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
         else
         {   // forward from image to non-uniform data
             cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
-            //deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nx, ny, nc*nt);
             pad<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], nxos, d_img[j], nx, nc*nt);
+            deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_apodos[j], nxos, nyos, nc*nt);
             fftwithshift(d_udata[j], fft_plan_os[j], j, nxos, nt*nc);
             degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_udata[j],
                 nxos, nc*nt, nro, npe1, kernwidth, skip_angles, flags.golden_angle);

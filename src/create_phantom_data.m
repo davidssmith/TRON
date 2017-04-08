@@ -129,7 +129,7 @@ subplot(122);
 imagesc((abs(xtron)));
 
 %%
-I = iradon(abs(squeeze(xtron)),linspace(0,pi-1/npe,npe));
+I = iradon(abs(squeeze(xtron)),linspace(0,180*(1-1/npe),npe));
 imagesc(I)
 %%
 x = [image_irt_irt image_gn_irt image_bart_irt image_tron_irt;
