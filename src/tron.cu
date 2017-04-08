@@ -61,7 +61,7 @@ static size_t h_outdatasize;
 
 // RECON CONFIGURATION
 static float grid_oversamp = 2.f;  // TODO: compute ngrid from nx, ny and oversamp
-static float kernwidth = 2.f;
+static float kernwidth = 4.f;
 static float data_undersamp = 1.f;
 
 static int prof_slide = 0;         // # of profiles to slide through the data between reconstructed images
@@ -69,7 +69,7 @@ static int skip_angles = 0;        // # of angles to skip at beginning of image 
 
 static int nc;  //  # of receive channels;
 static int nt;  // # of repeated measurements of same trajectory
-static int nro, npe1, npe2, npe1work, npe2work;  // radial readout and phase encodes
+static int nro, npe1, npe2, npe1work;//, npe2work;  // radial readout and phase encodes
 static int nx, ny, nz, nxos, nyos, nzos;  // Cartesian dimensions of uniform data
 
 static struct {
@@ -349,12 +349,8 @@ fillapod (float2 *d_apod, const int nx, const int ny, const float kernwidth, con
         for (int y = n-w; y < n; ++y)
             h_apod[n*x + y].x = gridkernel(n-x, n-y, kernwidth, grid_oversamp);
     }
-    dprint(d_imgsize,lu);
-    dprint(d_apod,lu);
-    dprint(h_apod,lu);
     cuTry(cudaMemcpy(d_apod, h_apod, d_imgsize, cudaMemcpyHostToDevice));
     cufftHandle fft_plan_apod;
-    dprint(n,lu);
     cufftSafeCall(cufftPlan2d(&fft_plan_apod, n, n, CUFFT_C2C));
     cufftSafeCall(cufftExecC2C(fft_plan_apod, d_apod, d_apod, CUFFT_INVERSE));
     fftshift<<<n,n>>>(d_apod, n, 1);
@@ -453,23 +449,25 @@ copy (float2* dst, const float2* __restrict__ src, const int n)
         dst[id] = src[id];
 }
 
-
 __global__ void
 pad (float2* dst, const int ndst, const float2* __restrict__ src, const int nsrc, const int nchan)
 {
+    const int w = ndst > nsrc ? (ndst - nsrc) / 2 : 0;
+
     // set whole array to zero first (not most efficient!)
     for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < ndst*ndst; id += blockDim.x * gridDim.x)
+    {
         for (int c = 0; c < nchan; ++c)
             dst[nchan*id + c] = make_float2(0.f, 0.f);
-    // insert src into center of dst
-    const int w = (ndst - nsrc) / 2;
-    for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nsrc*nsrc; id += blockDim.x * gridDim.x)
-    {
-        int xdst = id / nsrc;
-        int ydst = id % nsrc;
-        int dstid = (xdst + w)*nsrc + ydst + w;
+        int xdst = id / ndst;
+        int ydst = id % ndst;
+        if ((xdst - w > 0) && (xdst - w < nsrc) && 
+            (ydst - w > 0) && (ydst - w < nsrc))
+        {
+            size_t srcid = (xdst - w)*nsrc + (ydst - w);
         for (int c = 0; c < nchan; ++c)
-            dst[nchan*dstid + c] = src[nchan*id + c];
+            dst[nchan*id + c] = src[nchan*srcid + c];
+        }
     }
 }
 
@@ -572,32 +570,29 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
 /*  generate 2D radial data from an input 2D image */
 __global__ void
 degridradial2d (
-    float2 *nudata, const float2 * __restrict__ udata, const int nimg,
-    const int nchan, const int nro, const int npe, const float kernwidth,
-    const int skip_angles, const int flag_golden_angle)
+    float2 *nudata, const float2 * __restrict__ udata, const int nx, const int nchan, const int nro, const int npe, const float kernwidth, const int skip_angles, const int flag_golden_angle)
 {
     const float grid_oversamp = 1.f;
     // udata: [NCHAN x NGRID x NGRID], nudata: NCHAN x NRO x NPE
     //float grid_oversamp = float(ngrid) / float(nro); // grid_oversampling factor
     for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nro*npe; id += blockDim.x * gridDim.x)
     {
-        int pe = id / nro; // find my location in the non-uniform data
-        int ro = id % nro;
-        float r = ro/(float)(nro) - 0.5f; // [-0.5,0.5-1/nro] convert indices to (r,theta) coordinates
-        float t = flag_golden_angle ? modang(PHI*(pe + skip_angles)) : float(pe) * M_PI / float(npe)+ M_PI/2;
-        float kx = r*cos(t); // [-0.5,0.5-1/nro] Cartesian freqs of non-Cart datum  // TODO: _sincosf?
-        float ky = r*sin(t); // [-0.5,0.5-1/nro]
-        float x = nimg*(0.5 - kx);  // [0,ngrid] (x,y) coordinates in grid units
-        float y = nimg*(ky + 0.5);
-
         for (int ch = 0; ch < nchan; ++ch) // zero my elements
-             nudata[nchan*id + ch] = make_float2(0.f, 0.f);
-        for (int ux = fmaxf(0.f,x-kernwidth); ux <= fminf(nimg-1,x+kernwidth); ++ux)
-        for (int uy = fmaxf(0.f,y-kernwidth); uy <= fminf(nimg-1,y+kernwidth); ++uy)
-        {
-            float wgt = degridkernel(ux - x, uy - y, kernwidth, grid_oversamp);
+            nudata[nchan*id + ch] = make_float2(0.f, 0.f);
+        // compute Cartesian coordinate of non-uniform point that we represent
+        int pe = id / nro; // my row and column in the non-uniform data
+        int ro = id % nro;
+        float rnu = nx*(float(ro)/float(nro) - 0.5f); // [-nx/2,nx/2) 
+        //if (!(rnu >= -nx/2 && rnu < nx/2)) printf("uh oh\n");
+        float tnu = flag_golden_angle ? modang(PHI*(pe + skip_angles)) : float(pe) * M_PI / float(npe) + M_PI/2;
+        float xnu = rnu*sin(tnu) + nx/2; // TODO: _sincosf?
+        float ynu = rnu*cos(tnu) + nx/2; 
+        for (int ixu = ceilf(fmaxf(0.f,xnu-kernwidth)); ixu <= floorf(fminf(nx-1,xnu+kernwidth)); ++ixu)
+        for (int iyu = ceilf(fmaxf(0.f,ynu-kernwidth)); iyu <= floorf(fminf(nx-1,ynu+kernwidth)); ++iyu)
+        {  // loop through contributing Cartesian points
+            float wgt = degridkernel(ixu - xnu, iyu - ynu, kernwidth, grid_oversamp);
             for (int ch = 0; ch < nchan; ++ch) {
-                float2 c = udata[nchan*(ux*nimg + uy) + ch] / (nro*npe*kernwidth*kernwidth); // TODO: check this
+                float2 c = udata[nchan*(ixu*nx + iyu) + ch] / (nro*npe*kernwidth*kernwidth); // TODO: check this
                 nudata[nchan*id + ch].x += wgt*c.x;
                 nudata[nchan*id + ch].y += wgt*c.y;
             }
@@ -718,14 +713,13 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
         }
         else
         {   // forward from image to non-uniform data
-            cuTry(cudaMemcpyAsync(d_udata[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
-            //pad<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], nxos, d_img[j], nx, nc*nt);
-            //degrid_deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], nx, 1, kernwidth, grid_oversamp);
-            fftwithshift(d_udata[j], fft_plan[j], j, nx, nt*nc);
-            //copy<<<gridsize,blocksize,0,stream[j]>>>(d_indata[j], d_img[j], nimg*nimg);
-
+            cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
+            //deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nx, ny, nc*nt);
+            pad<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], nxos, d_img[j], nx, nc*nt);
+            fftwithshift(d_udata[j], fft_plan_os[j], j, nxos, nt*nc);
             degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_udata[j],
-                nx, nc*nt, nro, npe1, kernwidth, skip_angles, flags.golden_angle);
+                nxos, nc*nt, nro, npe1, kernwidth, skip_angles, flags.golden_angle);
+            //copy<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_udata[j], nxos*nyos);
 #ifdef CUDA_HOST_MALLOC
             cuTry(cudaMemcpyAsync(h_outdata + nc*nt*nro*npe1*z, d_nudata[j], d_nudatasize, cudaMemcpyDeviceToHost, stream[j]));
 #else
@@ -837,7 +831,7 @@ main (int argc, char *argv[])
     h_indata = (float2*)ra_in.data;
     assert(ra_in.ndims == 5);
     DPRINT("Sanity check: indata[0] = %f + %f i\n", h_indata[0].x, h_indata[0].y);
-    DPRINT("indims = {%lu, %lu, %lu, %lu, %lu}\n", ra_in.dims[0], ra_in.dims[1], ra_in.dims[2], ra_in.dims[3], ra_in.dims[4]);
+    DPRINT("indims = {%llu, %llu, %llu, %llu, %llu}\n", ra_in.dims[0], ra_in.dims[1], ra_in.dims[2], ra_in.dims[3], ra_in.dims[4]);
 
 
     printf("WARNING: Assuming square Cartesian dimensions for now.\n");
@@ -871,7 +865,7 @@ main (int argc, char *argv[])
             nz = 1 + (npe1 - npe1work) / prof_slide;
             nzos = 1;
         }
-        npe2work = npe2;
+        //npe2work = npe2;
         ra_out.dims[1] = nt;
         ra_out.dims[2] = nx;
         ra_out.dims[3] = ny;
@@ -886,11 +880,10 @@ main (int argc, char *argv[])
         nx = ra_in.dims[2];
         ny = ra_in.dims[3];
         nz = ra_in.dims[4];
-        nxos = grid_oversamp*nx;
-        nyos = grid_oversamp*ny;
-        nzos = grid_oversamp*nz;
-        npe1work = 2 * data_undersamp * nx;  // TODO: fix this hack
-        nro = 2*nx;  // TODO: implement non-square images
+        nxos = nx*grid_oversamp;
+        nyos = ny*grid_oversamp;
+        nro = grid_oversamp*nx;  // TODO: implement non-square images
+        npe1work = data_undersamp * nro;  // TODO: fix this hack
         npe1 = nro;   // TODO: make this more customizable
         if (flags.koosh) {
             npe2 = nz;
@@ -909,18 +902,19 @@ main (int argc, char *argv[])
     dprint(h_outdatasize,ld);
     assert(nc % 2 == 0 || nc == 1); // only single or even dimensions implemented for now
 
-dprint(nc,d);
-dprint(nt,d);
-dprint(nro,d);
-dprint(npe1,d);
-dprint(npe2,d);
-dprint(nx,d);
-dprint(ny,d);
-dprint(nz,d);
-dprint(nxos,d);
-dprint(nyos,d);
-dprint(nzos,d);
-dprint(npe1work,d);
+    dprint(grid_oversamp,f);
+    dprint(nc,d);
+    dprint(nt,d);
+    dprint(nro,d);
+    dprint(npe1,d);
+    dprint(npe2,d);
+    dprint(nx,d);
+    dprint(ny,d);
+    dprint(nz,d);
+    dprint(nxos,d);
+    dprint(nyos,d);
+    dprint(nzos,d);
+    dprint(npe1work,d);
 
 
 #ifdef CUDA_HOST_MALLOC

@@ -30,7 +30,7 @@ npe = 2*N;
 traj = zeros(3,nro,npe);
 r = 2*pi*(0:nro-1)/nro - pi;
 for pe = 1:npe
-    theta = (pe-1)*pi / npe;
+    theta = (pe-1)*pi / npe + pi/2;
     traj(1,:,pe) = r *cos(theta);
     traj(2,:,pe) = r* sin(theta);
 end
@@ -113,19 +113,23 @@ image_tron_tron = squeeze(raread('sl_tron_tron.ra'));
 
 %% Plot everything
 data_tron = double(raread('sl_data_tron.ra'));
-x = [squeeze(data_irt).*w squeeze(data_gn).*w squeeze(data_bart).*w squeeze(data_tron).*w];
+data_irt = double(raread('sl_data_irt.ra'));
+
+%x = [squeeze(data_irt).*w squeeze(data_gn).*w squeeze(data_bart).*w squeeze(data_tron).*w];
 
 xirt = fftshift(fft(fftshift(squeeze(data_irt),1),[],1),1);
 xtron = fftshift(fft(fftshift(squeeze(data_tron),1),[],1),1);
+%xtron = squeeze(data_tron);
+%xirt = squeeze(data_irt);
 figure(1);
-subplot(121);
-imagesc(abs(xirt));
 colormap(gray)
+subplot(121);
+imagesc((abs(xirt)));
 subplot(122);
-imagesc(abs(xtron));
+imagesc((abs(xtron)));
 
 %%
-I = iradon(abs(squeeze(xirt)),linspace(0,pi-1/npe,npe));
+I = iradon(abs(squeeze(xtron)),linspace(0,pi-1/npe,npe));
 imagesc(I)
 %%
 x = [image_irt_irt image_gn_irt image_bart_irt image_tron_irt;
