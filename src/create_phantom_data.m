@@ -59,7 +59,6 @@ osf = 2; wg = 2; sw = 1;
 Kirt = reshape(traj(1:2,:,:), 2, []).';
 st = nufft_init(Kirt, [N N], wg*[2 2], osf*[N N], [N/2 N/2]);
 
-
 %% Set up gpuNUFFT
 Kgn = reshape(traj, 3, []);
 G = gpuNUFFT(Kgn/2/pi,w,osf,wg,sw,[N,N],[],true);
@@ -119,18 +118,24 @@ data_irt = double(raread('sl_data_irt.ra'));
 
 xirt = fftshift(fft(fftshift(squeeze(data_irt),1),[],1),1);
 xtron = fftshift(fft(fftshift(squeeze(data_tron),1),[],1),1);
-%xtron = squeeze(data_tron);
-%xirt = squeeze(data_irt);
+xtron = squeeze(data_tron).*w;
+xirt = squeeze(data_irt).*w;
 figure(1);
-colormap(gray)
+colormap('default')
 subplot(121);
 imagesc((abs(xirt)));
+colorbar;
 subplot(122);
 imagesc((abs(xtron)));
+colorbar;
 
 %%
-I = iradon(abs(squeeze(xtron)),linspace(0,180*(1-1/npe),npe));
+I = iradon(abs(squeeze(xtron)),linspace(-180,0*(1-1/npe),npe));
 imagesc(I)
+%%
+figure(2)
+imagesc(abs(squeeze(image_tron_tron)));
+colormap(gray);
 %%
 x = [image_irt_irt image_gn_irt image_bart_irt image_tron_irt;
     image_irt_gn image_gn_gn image_bart_gn image_tron_gn;

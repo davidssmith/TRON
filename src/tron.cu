@@ -61,7 +61,7 @@ static size_t h_outdatasize;
 
 // RECON CONFIGURATION
 static float grid_oversamp = 2.f;  // TODO: compute ngrid from nx, ny and oversamp
-static float kernwidth = 4.f;
+static float kernwidth = 2.f;
 static float data_undersamp = 1.f;
 
 static int prof_slide = 0;         // # of profiles to slide through the data between reconstructed images
@@ -356,7 +356,7 @@ fillapod (float2 *d_apod, const int nx, const int ny, const float kernwidth, con
     fftshift<<<n,n>>>(d_apod, n, 1);
     cuTry(cudaMemcpy(h_apod, d_apod, d_imgsize, cudaMemcpyDeviceToHost));
 
-    float maxval = 0.f;
+    float maxval = 0.f;  // TODO: do this entirely on the GPU
     for (int k = 0; k < n*n; ++k) { // take magnitude and find brightest pixel at same time
         float mag = abs(h_apod[k]);
         h_apod[k] = make_float2(mag);
@@ -364,7 +364,7 @@ fillapod (float2 *d_apod, const int nx, const int ny, const float kernwidth, con
     }
     for (int k = 0; k < n*n; ++k) { // normalize it   TODO: check for image artifacts
         h_apod[k].x /= maxval;
-        h_apod[k].x = h_apod[k].x > 0.1f ? 1.0f / h_apod[k].x : 1.0f;
+        h_apod[k].x = h_apod[k].x > 0.001f ? 1.0f / h_apod[k].x : 1.0f;
     }
     cuTry(cudaMemcpy(d_apod, h_apod, d_imgsize, cudaMemcpyHostToDevice));
     free(h_apod);
@@ -396,7 +396,7 @@ degrid_deapodize (float2 *img, const int nimg, const int nchan,
         float s = d > beta ? sqrtf(d*d - beta*beta) : 1.f;
         float f = s != 0.f ? sinf(s) / s : 1.f;
         for (int c = 0; c < nchan; ++c)
-            img[nchan*id+c] /= f;
+            img[nchan*id+c] *= f;
     }
 }
 
@@ -715,8 +715,10 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
         else
         {   // forward from image to non-uniform data
             cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
+            deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nx, ny, nc*nt);
+            //degrid_deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], nx, nc*nt, kernwidth, grid_oversamp);
             pad<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], nxos, d_img[j], nx, nc*nt);
-            deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_apodos[j], nxos, nyos, nc*nt);
+            //deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_apodos[j], nxos, nyos, nc*nt);
             fftwithshift(d_udata[j], fft_plan_os[j], j, nxos, nt*nc);
             degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_udata[j],
                 nxos, nc*nt, nro, npe1, kernwidth, skip_angles, flags.golden_angle);
