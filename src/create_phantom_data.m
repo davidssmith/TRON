@@ -121,13 +121,14 @@ xtron = fftshift(fft(fftshift(squeeze(data_tron),1),[],1),1);
 xtron = squeeze(data_tron).*w;
 xirt = squeeze(data_irt).*w;
 figure(1);
-colormap('default')
+
 subplot(121);
-imagesc((abs(xirt)));
+imagesc((abs(xirt)));   
 colorbar;
 subplot(122);
 imagesc((abs(xtron)));
 colorbar;
+colormap(gray)
 
 %%
 I = iradon(abs(squeeze(xtron)),linspace(-180,0*(1-1/npe),npe));

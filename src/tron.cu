@@ -257,56 +257,110 @@ coilcombinewalsh (float2 *img, const float2 * __restrict__ coilimg,
 // #endif
     }
 }
+//
+// __host__ __device__ float
+// i0f (const float x)
+// {
+//     if (x == 0.f) return 1.f;
+//     float z = x * x;
+//     float num = (z* (z* (z* (z* (z* (z* (z* (z* (z* (z* (z* (z* (z*
+//         (z* 0.210580722890567e-22  + 0.380715242345326e-19 ) +
+//         0.479440257548300e-16) + 0.435125971262668e-13 ) +
+//         0.300931127112960e-10) + 0.160224679395361e-7  ) +
+//         0.654858370096785e-5)  + 0.202591084143397e-2  ) +
+//         0.463076284721000e0)   + 0.754337328948189e2   ) +
+//         0.830792541809429e4)   + 0.571661130563785e6   ) +
+//         0.216415572361227e8)   + 0.356644482244025e9   ) +
+//         0.144048298227235e10);
+//     float den = (z*(z*(z-0.307646912682801e4)+
+//         0.347626332405882e7)-0.144048298227235e10);
+//     return -num/den;
+// }
 
-__host__ __device__ float
-i0f (const float x)
+__host__ __device__ static float
+i0 (const float x)
 {
-    if (x == 0.f) return 1.f;
-    float z = x * x;
-    float num = (z* (z* (z* (z* (z* (z* (z* (z* (z* (z* (z* (z* (z*
-        (z* 0.210580722890567e-22  + 0.380715242345326e-19 ) +
-        0.479440257548300e-16) + 0.435125971262668e-13 ) +
-        0.300931127112960e-10) + 0.160224679395361e-7  ) +
-        0.654858370096785e-5)  + 0.202591084143397e-2  ) +
-        0.463076284721000e0)   + 0.754337328948189e2   ) +
-        0.830792541809429e4)   + 0.571661130563785e6   ) +
-        0.216415572361227e8)   + 0.356644482244025e9   ) +
-        0.144048298227235e10);
-    float den = (z*(z*(z-0.307646912682801e4)+
-        0.347626332405882e7)-0.144048298227235e10);
-    return -num/den;
+    float ax = fabsf(x);
+    float ans;
+    float y;
+
+    if (ax < 3.75)
+    {
+        y=x/3.75,y=y*y;
+        ans=1.0+y*(3.5156229+y*(3.0899424+y*(1.2067492
+               +y*(0.2659732+y*(0.360768e-1+y*0.45813e-2)))));
+    }
+    else
+    {
+        y=3.75/ax;
+        ans=(expf(ax)/sqrtf(ax))*(0.39894228+y*(0.1328592e-1
+                +y*(0.225319e-2+y*(-0.157565e-2+y*(0.916281e-2
+                +y*(-0.2057706e-1+y*(0.2635537e-1+y*(-0.1647633e-1
+                +y*0.392377e-2))))))));
+    }
+    return ans;
 }
+
+
+
+// __host__ __device__ inline float
+// gridkernel (const float dx, const float dy, const float kernwidth, const float grid_oversamp)
+// {
+//     float r2 = dx*dx + dy*dy;
+// #ifdef KERN_KB
+//     //const float kernwidth = 2.f;
+// #define SQR(x) ((x)*(x))
+// #define BETA (M_PI*sqrtf(SQR(kernwidth/grid_oversamp*(grid_oversamp-0.5))-0.8))
+//     return r2 < kernwidth*kernwidth ? i0f(BETA * sqrtf (1.f - r2/kernwidth/kernwidth)) / i0f(BETA): 0.f;
+// #else
+//     const float sigma = 0.33f; // ballparked from Jackson et al. 1991. IEEE TMI, 10(3), 473–8
+//     return expf(-0.5f*r2/sigma/sigma);
+// #endif
+// }
 
 __host__ __device__ inline float
-gridkernel (const float dx, const float dy, const float kernwidth, const float grid_oversamp)
-{
+gridkernel (const float dx, const float dy, const float sigma, const float m, const int n)
+{  //function window_kaiser_bessel(x,n,m,sigma)
+
+    // TODO: WHAT ARE m and n?   m = grid_oversamp, n = nx?
     float r2 = dx*dx + dy*dy;
-#ifdef KERN_KB
-    //const float kernwidth = 2.f;
-#define SQR(x) ((x)*(x))
-#define BETA (M_PI*sqrtf(SQR(kernwidth/grid_oversamp*(grid_oversamp-0.5))-0.8))
-    return r2 < kernwidth*kernwidth ? i0f(BETA * sqrtf (1.f - r2/kernwidth/kernwidth)) / i0f(BETA): 0.f;
-#else
-    const float sigma = 0.33f; // ballparked from Jackson et al. 1991. IEEE TMI, 10(3), 473–8
-    return expf(-0.5f*r2/sigma/sigma);
-#endif
+    float x = sqrtf(r2);  // TODO: eliminate this
+    float b = M_PI*(2.f - 1.f/sigma);
+    float arg = m*m - n*n*r2;
+    if (fabsf(x) < m/n)
+        return sinhf(b*sqrtf(arg))/sqrtf(arg)/M_PI;
+    else if (fabsf(x) > m/n)
+        return 0.f;
+    else
+        return b/M_PI;
 }
 
-// TODO: eliminate or combine the kernels
+// // TODO: eliminate or combine the kernels
+// __host__ __device__ inline float
+// degridkernel (const float dx, const float dy, const float kernwidth, const float grid_oversamp)
+// {
+//     float r2 = dx*dx + dy*dy;
+// #ifdef KERN_KB
+//     //const float kernwidth = 2.f;
+// #define SQR(x) ((x)*(x))
+// #define BETA (M_PI*sqrtf(SQR(kernwidth/grid_oversamp*(grid_oversamp-0.5))-0.8))
+//     return r2 < kernwidth*kernwidth ? i0f(BETA * sqrtf (1.f - r2/kernwidth/kernwidth)) / i0f(BETA): 0.f;
+// #else
+//     const float sigma = 0.33f; // ballparked from Jackson et al. 1991. IEEE TMI, 10(3), 473–8
+//     return expf(-0.5f*r2/sigma/sigma);
+// #endif
+// }
+
+// gridkernel_hat_inv (k,n,m,sigma)
 __host__ __device__ inline float
-degridkernel (const float dx, const float dy, const float kernwidth, const float grid_oversamp)
+gridkernel_hat_inv (const float kx, const float ky, const float sigma, const float grid_oversamp, const int N)
 {
-    float r2 = dx*dx + dy*dy;
-#ifdef KERN_KB
-    //const float kernwidth = 2.f;
-#define SQR(x) ((x)*(x))
-#define BETA (M_PI*sqrtf(SQR(kernwidth/grid_oversamp*(grid_oversamp-0.5))-0.8))
-    return r2 < kernwidth*kernwidth ? i0f(BETA * sqrtf (1.f - r2/kernwidth/kernwidth)) / i0f(BETA): 0.f;
-#else
-    const float sigma = 0.33f; // ballparked from Jackson et al. 1991. IEEE TMI, 10(3), 473–8
-    return expf(-0.5f*r2/sigma/sigma);
-#endif
+  float b = M_PI*(2.f - 1.f/sigma);
+  float t = 2.f*M_PI*kx/N;  // TODO: fix this, use ky also
+  //return besseli(0,m*sqrt(b*b - t*t);
+  return i0(sqrtf(b*b - t*t));
 }
+
 
 __device__ inline float
 modang (const float x)   /* rescale arbitrary angles to [0,2PI] interval */
@@ -339,15 +393,15 @@ fillapod (float2 *d_apod, const int nx, const int ny, const float kernwidth, con
         h_apod[k] = make_float2(0.f,0.f);
     for (int x = 0; x < w; ++x) {
         for (int y = 0; y < w; ++y)
-            h_apod[n*x + y].x = gridkernel(x, y, kernwidth, grid_oversamp);
+            h_apod[n*x + y].x = gridkernel(x, y, kernwidth, grid_oversamp, nx);
         for (int y = n-w; y < n; ++y)
-            h_apod[n*x + y].x = gridkernel(x, n-y, kernwidth, grid_oversamp);
+            h_apod[n*x + y].x = gridkernel(x, n-y, kernwidth, grid_oversamp, nx);
     }
     for (int x = n-w; x < n; ++x) {
         for (int y = 0; y < w; ++y)
-            h_apod[n*x + y].x = gridkernel(n-x, y, kernwidth, grid_oversamp);
+            h_apod[n*x + y].x = gridkernel(n-x, y, kernwidth, grid_oversamp, nx);
         for (int y = n-w; y < n; ++y)
-            h_apod[n*x + y].x = gridkernel(n-x, n-y, kernwidth, grid_oversamp);
+            h_apod[n*x + y].x = gridkernel(n-x, n-y, kernwidth, grid_oversamp, nx);
     }
     cuTry(cudaMemcpy(d_apod, h_apod, d_imgsize, cudaMemcpyHostToDevice));
     cufftHandle fft_plan_apod;
@@ -461,7 +515,7 @@ pad (float2* dst, const int ndst, const float2* __restrict__ src, const int nsrc
             dst[nchan*id + c] = make_float2(0.f, 0.f);
         int xdst = id / ndst;
         int ydst = id % ndst;
-        if ((xdst - w > 0) && (xdst - w < nsrc) && 
+        if ((xdst - w > 0) && (xdst - w < nsrc) &&
             (ydst - w > 0) && (ydst - w < nsrc))
         {
             size_t srcid = (xdst - w)*nsrc + (ydst - w);
@@ -546,7 +600,7 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
                 {
                     float kx = r*cf; // [-nxos/2 ... nxos/2-1]    // TODO: compute distance in radial coordinates?
                     float ky = r*sf; // [-nyos/2 ... nyos/2-1]
-                    float wgt = gridkernel(kx - x, ky - y, kernwidth, grid_oversamp);
+                    float wgt = gridkernel(kx - x, ky - y, kernwidth, grid_oversamp, nxos); // TODO: fix this, not nxos
                     if (flag_postcomp)
                       sdc += wgt;
                     for (int ch = 0; ch < nchan; ch++) { // unrolled by 2 'cuz faster
@@ -582,15 +636,15 @@ degridradial2d (
         // compute Cartesian coordinate of non-uniform point that we represent
         int pe = id / nro; // my row and column in the non-uniform data
         int ro = id % nro;
-        float rnu = nx*(float(ro)/float(nro) - 0.5f); // [-nx/2,nx/2) 
+        float rnu = nx*(float(ro)/float(nro) - 0.5f); // [-nx/2,nx/2)
         //if (!(rnu >= -nx/2 && rnu < nx/2)) printf("uh oh\n");
         float tnu = flag_golden_angle ? modang(PHI*(pe + skip_angles)) : float(pe) * M_PI / float(npe) + M_PI/2;
         float xnu = rnu*sin(tnu) + nx/2; // TODO: _sincosf?
-        float ynu = rnu*cos(tnu) + nx/2; 
+        float ynu = rnu*cos(tnu) + nx/2;
         for (int ixu = ceilf(fmaxf(0.f,xnu-kernwidth)); ixu <= floorf(fminf(nx-1,xnu+kernwidth)); ++ixu)
         for (int iyu = ceilf(fmaxf(0.f,ynu-kernwidth)); iyu <= floorf(fminf(nx-1,ynu+kernwidth)); ++iyu)
         {  // loop through contributing Cartesian points
-            float wgt = degridkernel(ixu - xnu, iyu - ynu, kernwidth, grid_oversamp);
+            float wgt = gridkernel(ixu - xnu, iyu - ynu, kernwidth, grid_oversamp, nx);  // TODO: is nx correct?
             for (int ch = 0; ch < nchan; ++ch) {
                 float2 c = udata[nchan*(ixu*nx + iyu) + ch] / (nro*npe*kernwidth*kernwidth); // TODO: check this
                 nudata[nchan*id + ch].x += wgt*c.x;
@@ -645,8 +699,8 @@ tron_init ()
 
       // TODO: can use only one d_apod for all streams?
       crop<<<nx,ny>>>(d_apod[j], nx, ny, d_apodos[j], nxos, nyos, 1);
-      
-      
+
+
   }
 }
 
