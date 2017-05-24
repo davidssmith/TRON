@@ -119,14 +119,14 @@ data_irt = double(raread('sl_data_irt.ra'));
 xirt = fftshift(fft(fftshift(squeeze(data_irt),1),[],1),1);
 xtron = fftshift(fft(fftshift(squeeze(data_tron),1),[],1),1);
 xtron = squeeze(data_tron).*w;
-xirt = squeeze(data_irt).*w;
+%xirt = squeeze(data_irt).*w;
 figure(1);
 
 subplot(121);
 imagesc((abs(xirt)));   
 colorbar;
 subplot(122);
-imagesc((abs(xtron)));
+imagesc(log(abs(xtron)));
 colorbar;
 colormap(gray)
 
