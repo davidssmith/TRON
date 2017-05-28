@@ -2,7 +2,7 @@
 make &&
 {
   echo ------- degridding
-  ./tron -v -k 2 -o 2 ../data/square.ra sl_data_tron.ra
+  ./tron -v -k 1 ../data/shepplogan.ra sl_data_tron.ra
 }  && {
   echo ------- re-gridding
   #./tron -a -v sl_data_irt.ra  sl_irt_tron.ra
