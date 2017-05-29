@@ -305,19 +305,10 @@ i0f (const float x)
 
 #endif
 
-/** \brief Square value */
-//#define sqr(__se) ((__se)*(__se))
-/** \brief beta function used in interpolation function. See Beatty et al. */
-//#define BETA(__kw,__osr) (M_PI*sqrt(sqr(__kw/__osr*(__osr-0.5f))-0.8f))
-/** \brief I_0 function used in interpolation function. See Beatty et al. */
-//#define I0_BETA(__kw,__osr) (i0f(BETA(__kw,__osr)))
-/** \brief Interpolation Kernel evaluation for radius */
-//#define kernel(__radius,__kw,__osr) (i0f (BETA(__kw,__osr) * sqrt (1 - sqr(__radius))) / I0_BETA(__kw,__osr))
-
-#if 1
+#if 0
 
 __device__ inline float
-kernel_beta (kernwidth, grid_oversamp)
+kernel_beta (const float kernwidth, const float grid_oversamp)
 {
     // from Beatty et al.
     float a = kernwidth / grid_oversamp;
@@ -326,7 +317,7 @@ kernel_beta (kernwidth, grid_oversamp)
 }
 
 
-__host__ __device__ inline float
+__device__ inline float
 gridkernel (const float k, const int G, const float W, const float alpha)
 {
     // Kaiser-Bessel from from Beatty et al.
@@ -343,46 +334,45 @@ gridkernel (const float k, const int G, const float W, const float alpha)
 #endif
 }
 
-__host__ __device__ inline float
+__device__ inline float
 gridkernel_hat_inv (const float x, const float G, const float W, const float alpha)
 {
-    float B = kernel_Beta(W, alpha);
-    float r = M_PI*W*x/G 
+    float B = kernel_beta(W, alpha);
+    float r = M_PI*W*x/G;
     float t = r*r - B*B;
     if (t > 0)
         return sinf(sqrtf(t)) / sqrtf(t);
+    else if (t == 0)
+        return 1.0f;
     else
         return 0.f; // TODO: fix this for t < 0 and t == 0
 }
 #else
 
-__host__ __device__ inline float
-gridkernel (const float x, const float n, const float m, const float sigma)
-{  //function window_kaiser_bessel(x,n,m,sigma)
-    // x comes in units of radians, should be in units of kernwidth/n
-    float y  = fabsf(x * m / n);
-    // m = kernwidth, n = nx*grid_oversamp?
+__device__ inline float
+gridkernel (const float x, const float G, const float m, const float sigma)
+{
+    // G = grid size, sigma = os factor
+    // x e [-G/2,G/2)
     float b = M_PI*(2.f - 1.f/sigma);
-    //float arg = m*m - n*n*x*x;
-    float arg = m*m - y*y;
-    if (y < m/n)
+    float arg = m*m - x*x;
+    if (fabsf(x) < m)
         return sinhf(b*sqrtf(arg))/sqrtf(arg)/M_PI;
-    else if (y > m/n)
+    else if (fabsf(x) > m)
         return 0.f;
     else
         return b/M_PI;
 }
-__host__ __device__ inline float
-gridkernel_hat_inv (const float k, const float n, const float m, const float sigma)
+
+__device__ inline float
+gridkernel_hat_inv (const float k, const float G, const float m,
+    const float sigma)
 {
 
   float b = M_PI*(2.f - 1.f/sigma);
-  float t = 2.f*M_PI*k/n;  // TODO: fix this, use ky also
-  //return besseli(0,m*sqrt(b*b - t*t);
-  return i0f(sqrtf(b*b - t*t));
-
-  //float W = 2.0f*m;
-  //float a = M_PI*W*k
+  float t = 2.f*M_PI*k/G;
+  assert (b*b >= t*t);
+  return i0f(m*sqrtf(b*b - t*t));
 }
 #endif
 
@@ -406,23 +396,20 @@ minangulardist(const float a, const float b)
 }
 
 __global__ void
-deapodkernel (float2  *d_a, const int nx, const int ny, const int nchan,
-    const float kernwidth, const float grid_oversamp)
+deapodkernel (float2  *d_a, const int G, const int nrep, const float m, const float sigma)
 {
-    for (size_t id = blockIdx.x * blockDim.x + threadIdx.x; id < nx*ny; id += blockDim.x * gridDim.x)
+    for (size_t id = blockIdx.x * blockDim.x + threadIdx.x; id < G*G; id += blockDim.x * gridDim.x)
     {
-        float x = nx / 2 - (id / nx);
-        float y = (id % nx) - nx/2;
+        float x = id / float(G) - 0.5f*G;
+        float y = float(id % G) - 0.5f*G;
         // TODO: enable this
-        float dx = sqrtf(x*x + y*y);
-        float wgt = gridkernel(dx, nx, kernwidth, grid_oversamp);// * gridkernel_hat_inv(y, ny, kernwidth, grid_oversamp);
-        //if (wgt < 1e-3) wgt = 1.0f;
-        for (int c = 0; c < nchan; ++c)
-            d_a[nchan*id + c] = make_float2(wgt);
+        float wgt = gridkernel_hat_inv(x, G, m, sigma) * gridkernel_hat_inv(y, G, m, sigma);
+        for (int c = 0; c < nrep; ++c)
+            d_a[nrep*id + c] /= wgt;
     }
 }
 
-
+#if 0
 __host__ void
 fillapod (float2 *d_apod, const int nx, const int ny, const float kernwidth, const float grid_oversamp)
 {
@@ -474,18 +461,7 @@ deapodize (float2 *img, const float2 * __restrict__ apod, const int nx, const in
         for (int c = 0; c < nchan; ++c)
             img[nchan*id+c] *= apod[id].x; // took magnitude prior
 }
-
-
-//__device__ float
-//degrid_deapodize (const float r, const int ngrid, const float kernwidth, const float grid_oversamp)
-//{
-//#define SQR(x) ((x)*(x))
-//#define BETA (M_PI*sqrtf(SQR(kernwidth/grid_oversamp*(grid_oversamp-0.5))-0.8))
-    //float a = M_PI*kernwidth*r/float(ngrid);
-    //float y = sqrtf(a*a - BETA*BETA);
-    //float w = sinf(y) / y;
-    //return w == 0.f ? 1.f : w;
-//}
+#endif
 
 
 __global__ void
@@ -664,22 +640,17 @@ degridradial2d (
         // compute Cartesian coordinate of non-uniform point that we represent
         float X = nx*(R*sinf(T) + 0.5f); // TODO: use _sincosf?
         float Y = nx*(R*cosf(T) + 0.5f); // [0, nx)
-        //for (int xu = floorf(X-kernwidth); xu <= ceilf(X+kernwidth); ++xu)
-        //for (int yu = floorf(Y-kernwidth); yu <= ceilf(Y+kernwidth); ++yu)
         for (int xu = ceilf(X-kernwidth); xu <= (X+kernwidth); ++xu)
         for (int yu = ceilf(Y-kernwidth); yu <= (Y+kernwidth); ++yu)
         //int xu = X;
         //int yu = Y;
         {  // loop through contributing Cartesian points
             // TODO: optimize this
-            float dx = sqrtf((xu-X)*(xu-X) + (yu-Y)*(yu-Y));
-            //float wgt = gridkernel(dx, nro, kernwidth, grid_oversamp);
             float wgt = gridkernel(xu - X, nro, kernwidth, grid_oversamp) *
                         gridkernel(yu - Y, nro, kernwidth, grid_oversamp);
             int i = (xu + nx) % nx;
             int j = (yu + nx) % nx;
-            //wgt /= float(nro*npe*kernwidth*kernwidth);
-            //wgt = 1.0;
+            wgt /= float(nro*npe*kernwidth*kernwidth);
             for (int c = 0; c < nchan; ++c) {
                 float2 g = udata[nchan*(i*nx + j) + c]; // TODO: check this, lift this division
                 nudata[nchan*id + c].x += wgt*g.x;
@@ -728,12 +699,12 @@ tron_init ()
 
       // TODO: only fill apod if depapodize is called
       // TODO: handle adjoint vs non-adjoint
-      cuTry(cudaMalloc((void **)&d_apod[j], d_imgsize));
-      cuTry(cudaMalloc((void **)&d_apodos[j], d_udatasize));
-      fillapod(d_apodos[j], nxos, nyos, kernwidth, grid_oversamp);
+      //cuTry(cudaMalloc((void **)&d_apod[j], d_imgsize));
+      //cuTry(cudaMalloc((void **)&d_apodos[j], d_udatasize));
+      //fillapod(d_apodos[j], nxos, nyos, kernwidth, grid_oversamp);
 
       // TODO: can use only one d_apod for all streams?
-      crop<<<nx,ny>>>(d_apod[j], nx, ny, d_apodos[j], nxos, nyos, 1);
+      //crop<<<nx,ny>>>(d_apod[j], nx, ny, d_apodos[j], nxos, nyos, 1);
 
 
   }
@@ -749,8 +720,8 @@ tron_shutdown()
         cuTry(cudaFree(d_nudata[j]));
         cuTry(cudaFree(d_coilimg[j]));
         cuTry(cudaFree(d_img[j]));
-        cuTry(cudaFree(d_apod[j]));
-        cuTry(cudaFree(d_apodos[j]));
+        //cuTry(cudaFree(d_apod[j]));
+        //cuTry(cudaFree(d_apodos[j]));
         cudaStreamDestroy(stream[j]);
     }
     DPRINT("done freeing\n");
@@ -793,7 +764,7 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
             // TODO: look at indims.c vs outdims.c to decide whether to coil combine and by how much (can compress)
             coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j],d_coilimg[j], nx, nc, nt, 1); /* 0 works, 1 good, 3 better */
             //coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nx, nc);
-            deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nx, ny, nt);
+            deapodkernel<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], nx, nc*nt, kernwidth, grid_oversamp);
 #ifdef CUDA_HOST_MALLOC
             cuTry(cudaMemcpyAsync(h_outdata + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
 #else
@@ -803,11 +774,10 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
         else
         {   // forward from image to non-uniform data
             cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
-            //deapodkernel<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], nx, ny, nc*nt, kernwidth, grid_oversamp);
-            //fftwithshift(d_img[j], fft_plan[j], j, nx, nc*nt);
-            //degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_img[j],
-            //    nx, nc*nt, nro, npe1work, kernwidth, skip_angles, flags.golden_angle);
-            deapodkernel<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nro, npe1work, nc*nt, kernwidth, grid_oversamp);
+            deapodkernel<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], nx, nc*nt, kernwidth, grid_oversamp);
+            fftwithshift(d_img[j], fft_plan[j], j, nx, nc*nt);
+            degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_img[j],
+                nx, nc*nt, nro, npe1work, kernwidth, skip_angles, flags.golden_angle);
 #ifdef CUDA_HOST_MALLOC
             cuTry(cudaMemcpyAsync(h_outdata + nc*nt*nro*npe1work*z, d_nudata[j], d_nudatasize, cudaMemcpyDeviceToHost, stream[j]));
 #else
