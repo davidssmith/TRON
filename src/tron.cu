@@ -257,7 +257,7 @@ coilcombinewalsh (float2 *img, const float2 * __restrict__ coilimg,
     }
 }
 
-#if 1
+#if 0
 __host__ __device__ float
 i0f (const float x)
 {
@@ -305,9 +305,17 @@ i0f (const float x)
 
 #endif
 
-#if 0
+
 
 __device__ inline float
+kaiser_bessel (const float t, const float T, const int N, const float alpha)
+{
+   float r = 2.0f*t / float(N-1) / T;
+   return i0f(M_PI*alpha*sqrtf(1.0f - r*r)) / i0f(M_PI*alpha);
+}
+
+
+__host__ __device__ inline float
 kernel_beta (const float kernwidth, const float grid_oversamp)
 {
     // from Beatty et al.
@@ -316,12 +324,14 @@ kernel_beta (const float kernwidth, const float grid_oversamp)
     return M_PI*sqrtf(a*a*b*b - 0.8);
 }
 
+#if 0
 
 __device__ inline float
-gridkernel (const float k, const int G, const float W, const float alpha)
+gridkernel (const float k, const int G, const float m, const float alpha)
 {
     // Kaiser-Bessel from from Beatty et al.
 #ifdef KERN_KB
+    float W = 2.0f*m;
     float r = 2.0f*G*k / W;
     float B = kernel_beta(W, alpha);
     if (r < 1.0f)
@@ -333,48 +343,49 @@ gridkernel (const float k, const int G, const float W, const float alpha)
     return expf(-0.5f*r2/sigma/sigma);
 #endif
 }
-
-__device__ inline float
-gridkernel_hat_inv (const float x, const float G, const float W, const float alpha)
-{
-    float B = kernel_beta(W, alpha);
-    float r = M_PI*W*x/G;
-    float t = r*r - B*B;
-    if (t > 0)
-        return sinf(sqrtf(t)) / sqrtf(t);
-    else if (t == 0)
-        return 1.0f;
-    else
-        return 0.f; // TODO: fix this for t < 0 and t == 0
-}
 #else
 
-__device__ inline float
-gridkernel (const float x, const float G, const float m, const float sigma)
+__host__ __device__ inline float
+gridkernel (const float x, const float n, const float m, const float sigma)
 {
-    // G = grid size, sigma = os factor
+    // from Keiner, Kunis, & Potts
+    // m = kernel radius, sigma = os factor
     // x e [-G/2,G/2)
-    float b = M_PI*(2.f - 1.f/sigma);
+#ifdef KERN_KB
     float arg = m*m - x*x;
-    if (fabsf(x) < m)
-        return sinhf(b*sqrtf(arg))/sqrtf(arg)/M_PI;
-    else if (fabsf(x) > m)
-        return 0.f;
+    float b = M_PI*(2.f - 1.f/sigma);
+    //float b = kernel_beta(m, sigma);
+    float f = sqrtf(fabsf(arg));
+    if (arg > 0.f)
+        return sinhf(b*f)/f/M_PI;
+    else if (arg < 0.f)
+        return (sin(b*f) / f / M_PI);
     else
         return b/M_PI;
-}
-
-__device__ inline float
-gridkernel_hat_inv (const float k, const float G, const float m,
-    const float sigma)
-{
-
-  float b = M_PI*(2.f - 1.f/sigma);
-  float t = 2.f*M_PI*k/G;
-  assert (b*b >= t*t);
-  return i0f(m*sqrtf(b*b - t*t));
-}
+#else
+    const float s = 0.33f; // ballparked from Jackson et al. 1991. IEEE TMI, 10(3), 473–8
+    return expf(-0.5f*x*x/s/s);
 #endif
+}
+
+#endif
+
+__host__ __device__ inline float
+gridkernelhat (const float k, const float n, const float m, const float sigma)
+{
+#ifdef KERN_KB
+    if (fabs(k) <= n*(1.0f - 0.5f/sigma)) {
+        float b = M_PI*(2.f - 1.f/sigma);
+        //float b = kernel_beta(n, sigma);
+        float t = 2.f*M_PI*k/n;
+        float f = sqrtf(b*b - t*t);
+        return i0f(m*f) / n;
+    } else
+        return 0.f;
+#else
+    return expf(-0.5f*k*k/G/G);
+#endif
+}
 
 
 __device__ inline float
@@ -396,20 +407,20 @@ minangulardist(const float a, const float b)
 }
 
 __global__ void
-deapodkernel (float2  *d_a, const int G, const int nrep, const float m, const float sigma)
+deapodkernel (float2  *d_a, const int n, const int nrep, const float m, const float sigma)
 {
-    for (size_t id = blockIdx.x * blockDim.x + threadIdx.x; id < G*G; id += blockDim.x * gridDim.x)
+    for (size_t id = blockIdx.x * blockDim.x + threadIdx.x; id < n*n; id += blockDim.x * gridDim.x)
     {
-        float x = id / float(G) - 0.5f*G;
-        float y = float(id % G) - 0.5f*G;
+        float x = id / float(n) - 0.5f*n;
+        float y = float(id % n) - 0.5f*n;
         // TODO: enable this
-        float wgt = gridkernel_hat_inv(x, G, m, sigma) * gridkernel_hat_inv(y, G, m, sigma);
+        float wgt = gridkernelhat(x, n, m, sigma) * gridkernelhat(y, n, m, sigma);
         for (int c = 0; c < nrep; ++c)
             d_a[nrep*id + c] /= wgt;
     }
 }
 
-#if 0
+#if 1
 __host__ void
 fillapod (float2 *d_apod, const int nx, const int ny, const float kernwidth, const float grid_oversamp)
 {
@@ -646,13 +657,13 @@ degridradial2d (
         //int yu = Y;
         {  // loop through contributing Cartesian points
             // TODO: optimize this
-            float wgt = gridkernel(xu - X, nro, kernwidth, grid_oversamp) *
-                        gridkernel(yu - Y, nro, kernwidth, grid_oversamp);
+            float wgt = gridkernel(xu - X, nx, kernwidth, grid_oversamp) *
+                        gridkernel(yu - Y, nx, kernwidth, grid_oversamp);
             int i = (xu + nx) % nx;
             int j = (yu + nx) % nx;
             wgt /= float(nro*npe*kernwidth*kernwidth);
             for (int c = 0; c < nchan; ++c) {
-                float2 g = udata[nchan*(i*nx + j) + c]; // TODO: check this, lift this division
+                float2 g = udata[nchan*(i*nx + j) + c];
                 nudata[nchan*id + c].x += wgt*g.x;
                 nudata[nchan*id + c].y += wgt*g.y;
             }
@@ -699,9 +710,9 @@ tron_init ()
 
       // TODO: only fill apod if depapodize is called
       // TODO: handle adjoint vs non-adjoint
-      //cuTry(cudaMalloc((void **)&d_apod[j], d_imgsize));
-      //cuTry(cudaMalloc((void **)&d_apodos[j], d_udatasize));
-      //fillapod(d_apodos[j], nxos, nyos, kernwidth, grid_oversamp);
+      cuTry(cudaMalloc((void **)&d_apod[j], d_imgsize));
+      cuTry(cudaMalloc((void **)&d_apodos[j], d_udatasize));
+      fillapod(d_apodos[j], nxos, nyos, kernwidth, grid_oversamp);
 
       // TODO: can use only one d_apod for all streams?
       //crop<<<nx,ny>>>(d_apod[j], nx, ny, d_apodos[j], nxos, nyos, 1);
@@ -720,8 +731,8 @@ tron_shutdown()
         cuTry(cudaFree(d_nudata[j]));
         cuTry(cudaFree(d_coilimg[j]));
         cuTry(cudaFree(d_img[j]));
-        //cuTry(cudaFree(d_apod[j]));
-        //cuTry(cudaFree(d_apodos[j]));
+        cuTry(cudaFree(d_apod[j]));
+        cuTry(cudaFree(d_apodos[j]));
         cudaStreamDestroy(stream[j]);
     }
     DPRINT("done freeing\n");
@@ -762,8 +773,9 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
             ifftwithshift(d_udata[j], fft_plan_os[j], j, nxos, nt*nc);
             crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nx, ny, d_udata[j], nxos, nyos, nc*nt);
             // TODO: look at indims.c vs outdims.c to decide whether to coil combine and by how much (can compress)
-            coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j],d_coilimg[j], nx, nc, nt, 1); /* 0 works, 1 good, 3 better */
-            //coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nx, nc);
+            //coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j],d_coilimg[j], nx, nc, nt, 1); /* 0 works, 1 good, 3 better */
+            coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nx, nc);
+            //deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nx, ny, nc*nt);
             deapodkernel<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], nx, nc*nt, kernwidth, grid_oversamp);
 #ifdef CUDA_HOST_MALLOC
             cuTry(cudaMemcpyAsync(h_outdata + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
@@ -775,6 +787,7 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
         {   // forward from image to non-uniform data
             cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
             deapodkernel<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], nx, nc*nt, kernwidth, grid_oversamp);
+            //deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nx, ny, nc*nt);
             fftwithshift(d_img[j], fft_plan[j], j, nx, nc*nt);
             degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_img[j],
                 nx, nc*nt, nro, npe1work, kernwidth, skip_angles, flags.golden_angle);
