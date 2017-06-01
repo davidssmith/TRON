@@ -81,6 +81,11 @@ data_tron = double(raread('sl_data_tron.ra'));
 data_gn = double(data_gn);
 data_bart = double(data_bart);
 
+%% Plot the data
+figure(1);
+data_tron = double(raread('sl_data_tron.ra'));
+imagesc(sqrt(abs([squeeze(data_irt), squeeze(data_gn); squeeze(data_bart), squeeze(data_tron)*20/N])));
+
 %% Everyone grids everyone else
 
 
@@ -103,6 +108,8 @@ image_tron_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_tron(:).*w(:),1,n
 !./tron -a -v sl_data_gn_ra   sl_gn_tron.ra
 !./tron -a -v sl_data_bart.ra sl_bart_tron.ra
 !./tron -a -v sl_data_tron.ra sl_tron_tron.ra
+
+%%
 image_irt_tron = squeeze(raread('sl_irt_tron.ra'));
 image_gn_tron = squeeze(raread('sl_gn_tron.ra'));
 image_bart_tron = squeeze(raread('sl_bart_tron.ra'));
@@ -131,20 +138,22 @@ colorbar;
 colormap(gray)
 
 %%
-I = iradon(abs(squeeze(xtron)),linspace(-180,0*(1-1/npe),npe));
+I = iradon(abs(squeeze(xirt)),linspace(-180,0*(1-1/npe),npe));
 imagesc(I)
+
 %%
-figure(2)
-imagesc(abs(squeeze(image_tron_tron)));
+figure(1)
+imagesc(abs(squeeze(image_tron_irt)));
 colormap(gray);
+
 %%
 x = [image_irt_irt image_gn_irt image_bart_irt image_tron_irt;
     image_irt_gn image_gn_gn image_bart_gn image_tron_gn;
     image_irt_bart image_gn_bart/nro/npe image_bart_bart/nro/npe image_tron_bart];
 
-%    image_irt_tron/nro/npe image_gn_tron/nro/npe image_bart_tron/nro/npe image_tron_tron];
+y = [image_irt_tron/nro/npe image_gn_tron/nro/npe image_bart_tron/nro/npe image_tron_tron/20/N/N];
 figure(2);
-imagesc(abs(x));
+imagesc((abs(y)));
 
 
 

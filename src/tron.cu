@@ -61,7 +61,7 @@ static size_t h_outdatasize;
 
 // RECON CONFIGURATION
 static float grid_oversamp = 2.f;  // TODO: compute ngrid from nx, ny and oversamp
-static float kernwidth = 1.f;
+static float kernwidth = 6.f;
 static float data_undersamp = 1.f;
 
 static int prof_slide = 0;         // # of profiles to slide through the data between reconstructed images
@@ -259,7 +259,7 @@ coilcombinewalsh (float2 *img, const float2 * __restrict__ coilimg,
 
 #if 0
 __host__ __device__ float
-i0f (const float x)
+besseli0 (const float x)
 {
     if (x == 0.f) return 1.f;
     float z = x * x;
@@ -280,8 +280,10 @@ i0f (const float x)
 #else
 
 __host__ __device__ static float
-i0f (const float x)
+besseli0 (float x)
 {
+    if (x < 0)  // TODO: is this correct?
+       x = -x;
     float ax = fabsf(x);
     float ans;
     float y;
@@ -307,13 +309,6 @@ i0f (const float x)
 
 
 
-__device__ inline float
-kaiser_bessel (const float t, const float T, const int N, const float alpha)
-{
-   float r = 2.0f*t / float(N-1) / T;
-   return i0f(M_PI*alpha*sqrtf(1.0f - r*r)) / i0f(M_PI*alpha);
-}
-
 
 __host__ __device__ inline float
 kernel_beta (const float kernwidth, const float grid_oversamp)
@@ -321,8 +316,38 @@ kernel_beta (const float kernwidth, const float grid_oversamp)
     // from Beatty et al.
     float a = kernwidth / grid_oversamp;
     float b = grid_oversamp - 0.5f;
-    return M_PI*sqrtf(a*a*b*b - 0.8);
+    //return 13.9086f;
+    //return M_PI*sqrtf(a*a*b*b - 0.8);
+    return M_PI*(2.f - 1.f/grid_oversamp);
 }
+
+#if 1
+__host__ __device__ inline float
+gridkernel (const float y, const int n, const float kernwidth, const float grid_oversamp)
+{
+    float x = y / float(n);
+    float B = kernel_beta(kernwidth, grid_oversamp);
+    if (fabs(x) >= 0.5f)
+      return 0.f;
+    float f = sqrtf(1.f - 4.f*x*x);
+    return besseli0(B*f) / besseli0(B);
+}
+
+__host__ __device__ inline float
+gridkernelhat (const float y, const int n, const float kernwidth, const float grid_oversamp)
+{
+    float x = y / float(n);
+    float B = kernel_beta(kernwidth, grid_oversamp);
+    float q = B*B - M_PI*M_PI*x*x;
+    if (q > 0)
+        return sinhf(sqrtf(q)) / sqrtf(q) / besseli0(B);
+    else if (q < 0)
+        return sinf(sqrtf(-q)) / sqrtf(-q) / besseli0(B);
+    else return 0.f;
+    //float f = sqrtf(B*B - M_PI*M_PI*x*x);
+    //return f == 0.f ? 1.f : (sinhf(f) / f / besseli0(B));
+}
+#endif
 
 #if 0
 
@@ -335,7 +360,7 @@ gridkernel (const float k, const int G, const float m, const float alpha)
     float r = 2.0f*G*k / W;
     float B = kernel_beta(W, alpha);
     if (r < 1.0f)
-      return (G/W)*i0f(B*sqrtf(1.0f - r*r));
+      return (G/W)*besseli0(B*sqrtf(1.0f - r*r));
     else
       return 0.f;
 #else
@@ -343,49 +368,7 @@ gridkernel (const float k, const int G, const float m, const float alpha)
     return expf(-0.5f*r2/sigma/sigma);
 #endif
 }
-#else
-
-__host__ __device__ inline float
-gridkernel (const float x, const float n, const float m, const float sigma)
-{
-    // from Keiner, Kunis, & Potts
-    // m = kernel radius, sigma = os factor
-    // x e [-G/2,G/2)
-#ifdef KERN_KB
-    float arg = m*m - x*x;
-    float b = M_PI*(2.f - 1.f/sigma);
-    //float b = kernel_beta(m, sigma);
-    float f = sqrtf(fabsf(arg));
-    if (arg > 0.f)
-        return sinhf(b*f)/f/M_PI;
-    else if (arg < 0.f)
-        return (sin(b*f) / f / M_PI);
-    else
-        return b/M_PI;
-#else
-    const float s = 0.33f; // ballparked from Jackson et al. 1991. IEEE TMI, 10(3), 473–8
-    return expf(-0.5f*x*x/s/s);
 #endif
-}
-
-#endif
-
-__host__ __device__ inline float
-gridkernelhat (const float k, const float n, const float m, const float sigma)
-{
-#ifdef KERN_KB
-    if (fabs(k) <= n*(1.0f - 0.5f/sigma)) {
-        float b = M_PI*(2.f - 1.f/sigma);
-        //float b = kernel_beta(n, sigma);
-        float t = 2.f*M_PI*k/n;
-        float f = sqrtf(b*b - t*t);
-        return i0f(m*f) / n;
-    } else
-        return 0.f;
-#else
-    return expf(-0.5f*k*k/G/G);
-#endif
-}
 
 
 __device__ inline float
@@ -414,7 +397,9 @@ deapodkernel (float2  *d_a, const int n, const int nrep, const float m, const fl
         float x = id / float(n) - 0.5f*n;
         float y = float(id % n) - 0.5f*n;
         // TODO: enable this
-        float wgt = gridkernelhat(x, n, m, sigma) * gridkernelhat(y, n, m, sigma);
+        //float wgt = gridkernelhat(x, n, m, sigma) * gridkernelhat(y, n, m, sigma);
+         float dx = sqrtf(x*x + y*y);
+        float wgt = gridkernelhat(dx, n, m, sigma) / gridkernelhat(0, n, m, sigma);;
         for (int c = 0; c < nrep; ++c)
             d_a[nrep*id + c] /= wgt;
     }
@@ -609,8 +594,10 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
                 {
                     float kx = r*cf; // [-nxos/2 ... nxos/2-1]    // TODO: compute distance in radial coordinates?
                     float ky = r*sf; // [-nyos/2 ... nyos/2-1]
-                    float wgt = gridkernel(kx - x, nxos, kernwidth, grid_oversamp) *
-                            gridkernel(ky - y, nxos, kernwidth, grid_oversamp); // TODO: fix this, not nxos
+                    float dx = sqrtf((kx-x)*(kx-x) + (ky-y)*(ky-y));
+                    float wgt = gridkernel(dx, nxos, kernwidth, grid_oversamp);
+                    //float wgt = gridkernel(kx - x, nxos, kernwidth, grid_oversamp) *
+                    //        gridkernel(ky - y, nxos, kernwidth, grid_oversamp); // TODO: fix this, not nxos
                     if (flag_postcomp)
                       sdc += wgt;
                     for (int ch = 0; ch < nchan; ch++) { // unrolled by 2 'cuz faster
@@ -634,15 +621,17 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
 /*  generate 2D radial data from an input 2D image */
 __global__ void
 degridradial2d (
-    float2 *nudata, const float2 * __restrict__ udata, const int nx, const int nchan,
-    const int nro, const int npe, const float kernwidth, const int skip_angles, const int flag_golden_angle)
+    float2 *nudata, const float2 * __restrict__ udata, const int nx, const int nrep,
+    const int nro, const int npe, const float kernwidth, const int skip_angles,
+    const int flag_golden_angle)
 {
     const float grid_oversamp = nro / (float)nx;
+    const float W = kernwidth ;// grid_oversamp;
     // udata: [NCHAN x NGRID x NGRID], nudata: NCHAN x NRO x NPE
     for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nro*npe; id += blockDim.x * gridDim.x)
     {
-        for (int c = 0; c < nchan; ++c) // zero my assigned unequal point
-            nudata[nchan*id + c] = make_float2(0.f, 0.f);
+        for (int c = 0; c < nrep; ++c) // zero my assigned unequal point
+            nudata[nrep*id + c] = make_float2(0.f, 0.f);
         int pe = id / nro; // my row and column in the non-uniform data
         int ro = id % nro;
         float R = float(ro)/float(nro) - 0.5f; // [-1/2,1/2)
@@ -651,23 +640,26 @@ degridradial2d (
         // compute Cartesian coordinate of non-uniform point that we represent
         float X = nx*(R*sinf(T) + 0.5f); // TODO: use _sincosf?
         float Y = nx*(R*cosf(T) + 0.5f); // [0, nx)
-        for (int xu = ceilf(X-kernwidth); xu <= (X+kernwidth); ++xu)
-        for (int yu = ceilf(Y-kernwidth); yu <= (Y+kernwidth); ++yu)
-        //int xu = X;
-        //int yu = Y;
-        {  // loop through contributing Cartesian points
+        for (int xu = floorf(X-W); xu <= ceilf(X+W); ++xu)
+        for (int yu = floorf(Y-W); yu <= ceilf(Y+W); ++yu)
+        {   // loop through contributing Cartesian points
             // TODO: optimize this
-            float wgt = gridkernel(xu - X, nx, kernwidth, grid_oversamp) *
-                        gridkernel(yu - Y, nx, kernwidth, grid_oversamp);
+            float dx = sqrtf((xu-X)*(xu-X) + (yu-Y)*(yu-Y));
+            if (dx > kernwidth)
+                continue;
+            float wgt = gridkernel(dx, nx, kernwidth, grid_oversamp);
+            //float wgt = gridkernel(xu - X, nx, kernwidth, grid_oversamp) *
+            //            gridkernel(yu - Y, nx, kernwidth, grid_oversamp);
             int i = (xu + nx) % nx;
             int j = (yu + nx) % nx;
-            wgt /= float(nro*npe*kernwidth*kernwidth);
-            for (int c = 0; c < nchan; ++c) {
-                float2 g = udata[nchan*(i*nx + j) + c];
-                nudata[nchan*id + c].x += wgt*g.x;
-                nudata[nchan*id + c].y += wgt*g.y;
+            for (int c = 0; c < nrep; ++c) {
+                float2 g = udata[nrep*(i*nx + j) + c];
+                nudata[nrep*id + c].x += wgt*g.x;
+                nudata[nrep*id + c].y += wgt*g.y;
             }
         }
+        //for (int c = 0; c < nrep; ++c)
+        //    nudata[nrep*id + c] /= some scale factor probably
     }
 }
 
@@ -791,6 +783,7 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
             fftwithshift(d_img[j], fft_plan[j], j, nx, nc*nt);
             degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_img[j],
                 nx, nc*nt, nro, npe1work, kernwidth, skip_angles, flags.golden_angle);
+            printf("kernel: %f \n", kernwidth);
 #ifdef CUDA_HOST_MALLOC
             cuTry(cudaMemcpyAsync(h_outdata + nc*nt*nro*npe1work*z, d_nudata[j], d_nudatasize, cudaMemcpyDeviceToHost, stream[j]));
 #else
