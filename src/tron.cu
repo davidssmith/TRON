@@ -61,7 +61,7 @@ static size_t h_outdatasize;
 
 // RECON CONFIGURATION
 static float grid_oversamp = 2.f;  // TODO: compute ngrid from nx, ny and oversamp
-static float kernwidth = 6.f;
+static float kernwidth = 1.f;
 static float data_undersamp = 1.f;
 
 static int prof_slide = 0;         // # of profiles to slide through the data between reconstructed images
@@ -323,6 +323,50 @@ kernel_beta (const float kernwidth, const float grid_oversamp)
 
 #if 1
 __host__ __device__ inline float
+gridkernel (const float x, const int n, const float kernwidth, const float grid_oversamp)
+{
+ // from Fessler
+  const float J = 2.0f*kernwidth;
+  const float alpha = 2.34f*J;
+  if (fabsf(x) < J/2) {
+    float r = 2.0f*x/J;
+    float f = sqrtf(1.0f - r*r);
+    float denom = besseli0(alpha);
+    assert(denom != 0.f);
+    return besseli0(alpha*f) / denom;
+  } else
+    return 0.0f;
+}
+#endif 
+
+#if 1
+__host__ __device__ inline float
+gridkernelhat (const float u, const int n, const float kernwidth, const float grid_oversamp)
+{
+  // from Fessler
+  const float J = 2.0f*kernwidth;
+  const float alpha = 2.34f*J;
+  //const int d = 1;
+  float r = M_PI*J*u;
+  float q = r*r - alpha*alpha;  // TODO: fix DomainError
+  //float nu = 1/2;
+  float y, z;
+  if (q > 0) {
+    z = sqrtf(q);
+    y = sqrtf(2*M_PI/z) * (J/2) / besseli0(alpha) * sinf(z) * sqrtf(2/M_PI/z);
+  } else if (q < 0) {
+    z = sqrtf(-q);
+    y = sqrtf(2*M_PI/z) * (J/2) / besseli0(alpha) * sinhf(z) * sqrtf(2/M_PI/z);
+  } else
+    z = 0.0f;
+  // J_1/2(z) = sin(z) * sqrt(2/pi/z)
+  return y;
+}
+#endif
+
+#if 0
+// from BART
+__host__ __device__ inline float
 gridkernel (const float y, const int n, const float kernwidth, const float grid_oversamp)
 {
     float x = y / float(n);
@@ -332,10 +376,13 @@ gridkernel (const float y, const int n, const float kernwidth, const float grid_
     float f = sqrtf(1.f - 4.f*x*x);
     return besseli0(B*f) / besseli0(B);
 }
+#endif
 
+#if 0
 __host__ __device__ inline float
 gridkernelhat (const float y, const int n, const float kernwidth, const float grid_oversamp)
 {
+  //from BART
     float x = y / float(n);
     float B = kernel_beta(kernwidth, grid_oversamp);
     float q = B*B - M_PI*M_PI*x*x;
@@ -778,7 +825,7 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
         else
         {   // forward from image to non-uniform data
             cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
-            deapodkernel<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], nx, nc*nt, kernwidth, grid_oversamp);
+            //deapodkernel<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], nx, nc*nt, kernwidth, grid_oversamp);
             //deapodize<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_apod[j], nx, ny, nc*nt);
             fftwithshift(d_img[j], fft_plan[j], j, nx, nc*nt);
             degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_img[j],
