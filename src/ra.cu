@@ -65,7 +65,7 @@ ra_read (ra_t *a, const char *path)
     read(fd, a->dims, a->ndims*sizeof(uint64_t));
 #ifdef CUDA_HOST_MALLOC
     cuTry(cudaMallocHost((void**)&(a->data), a->size))
-    printf("RA using CUDA malloc\n");
+    //printf("RA using CUDA malloc\n");
 #else
     a->data = (uint8_t*)malloc(a->size);
 #endif
