@@ -394,10 +394,9 @@ deapodkernel (float2  *d_a, const int n, const int nrep, const float m, const fl
         // TODO: enable this
         float wgt = gridkernelhat(x*scale, m, sigma) * gridkernelhat(y*scale, m, sigma);
            // TODO: invert here, then multiply below
-        //float wgt = id % 3 == 0 ? 1.0 : 2.;
-        //wgt = wgt > 0 ? wgt : 1.0f;
+        wgt = wgt > 0. ? 1. / wgt : 0.0f;
         for (int c = 0; c < nrep; ++c)
-            d_a[nrep*id + c] /= wgt;
+            d_a[nrep*id + c] *=wgt; // make_float2(wgt,0);
     }
 }
 
@@ -461,8 +460,8 @@ pad (float2* dst, const int ndst, const float2* __restrict__ src, const int nsrc
             (ydst - w > 0) && (ydst - w < nsrc))
         {
             size_t srcid = (xdst - w)*nsrc + (ydst - w);
-        for (int c = 0; c < nchan; ++c)
-            dst[nchan*id + c] = src[nchan*srcid + c];
+            for (int c = 0; c < nchan; ++c)
+                dst[nchan*id + c] = src[nchan*srcid + c];
         }
     }
 }
@@ -636,13 +635,11 @@ degridradial2d (
         float R = float(ro)/nro - 0.5f; // [-1/2,1/2)
         float T = flag_golden_angle ? modang(PHI*(pe + skip_angles)) : pe*M_PI/float(npe) + M_PI/2;
         // my Cartesian coordinates
-        float sinT, cosT;
-        __sincosf(T, &sinT, &cosT);
-        float X = n*(R*sinT + 0.5f); // TODO: use _sincosf?
-        float Y = n*(R*cosT + 0.5f); // [0, n)
-        float Weff = W;
+        float X = n*(R*sinf(T) + 0.5f); // TODO: use _sincosf?
+        float Y = n*(R*cosf(T) + 0.5f); // [0, n)
+        float Weff = W / gridos;
         for (int xu = ceilf(X-Weff); xu <= (X+Weff); ++xu) {
-            float wgtx = gridkernel(xu-X, W, gridos);
+            float wgtx = gridkernel(xu-X, Weff, gridos);
             for (int yu = ceilf(Y-Weff); yu <= (Y+Weff); ++yu)
             {   // loop through contributing Cartesian points
                 // TODO: optimize this
@@ -650,7 +647,7 @@ degridradial2d (
                 //if (dx > W)
                 //    continue;
                 //float wgt = gridkernel(dx, W, gridos);
-                float wgt = wgtx * gridkernel((yu-Y), W, gridos);
+                float wgt = wgtx * gridkernel(yu-Y, Weff, gridos);
                 int i = (xu + n) % n;
                 int j = (yu + n) % n;
                 int offset = nrep*(i*n + j);
@@ -660,8 +657,9 @@ degridradial2d (
             }
 
         }
-        //for (int c = 0; c < nrep; ++c)
-        //    nudata[nrep*id + c] /= some scale factor probably
+        for (int c = 0; c < nrep; ++c) {
+            nudata[nrep*id + c] *= make_float2(0,-1) / (nro*npe*kernwidth);
+        }
     }
 }
 #endif
@@ -769,11 +767,11 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
         else
         {   // forward from image to non-uniform data
             cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
-            //pad<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], nxos, d_img[j], nx, nc*nt);
-            scale = 1. / nx;
-            deapodkernel<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], nx, nc*nt, kernwidth, gridos, scale);
-            fftwithshift(d_img[j], fft_plan[j], j, nx, nc*nt);
-            degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_img[j], nx, nc*nt,
+            pad<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], nxos, d_img[j], nx, nc*nt);
+            scale = 1. / nx/ gridos;
+            deapodkernel<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], nxos, nc*nt, kernwidth, gridos, scale);
+            fftwithshift(d_udata[j], fft_plan_os[j], j, nxos, nc*nt);
+            degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_udata[j], nxos, nc*nt,
                  nro, npe1work, kernwidth, skip_angles, flags.golden_angle);
 #ifdef CUDA_HOST_MALLOC
             cuTry(cudaMemcpyAsync(h_outdata + nc*nt*nro*npe1work*z, d_nudata[j], d_nudatasize, cudaMemcpyDeviceToHost, stream[j]));
