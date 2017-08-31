@@ -125,7 +125,42 @@ inline void __cufftSafeCall (cufftResult err, const char *file, const int line)
 }
 
 __global__ void
-fftshift (float2 *dst, const int n, const int nchan)
+fftshift (float2 *dst, float2 *src, const int n, const int nchan)
+{
+    for (int idsrc = blockIdx.x * blockDim.x + threadIdx.x; idsrc < n*n; idsrc += blockDim.x * gridDim.x)
+    {
+        int xsrc = idsrc / n;
+        int ysrc = idsrc % n;
+        int xdst = (xsrc + n/2) % n;
+        int ydst = (ysrc + n/2) % n;
+        int iddst = n*xdst + ydst;
+        for (int c = 0; c < nchan; ++c) {
+          dst[iddst*nchan + c].x = src[idsrc*nchan + c].x;
+          dst[iddst*nchan + c].y = src[idsrc*nchan + c].y;
+        }
+    }
+}
+
+__global__ void
+ifftshift (float2 *dst, float2 *src, const int n, const int nchan)
+{
+    for (int idsrc = blockIdx.x * blockDim.x + threadIdx.x; idsrc < n*n; idsrc += blockDim.x * gridDim.x)
+    {
+        int xsrc = idsrc / n;
+        int ysrc = idsrc % n;
+        int xdst = (xsrc - n/2 + n) % n;
+        int ydst = (ysrc - n/2 + n) % n;
+        int iddst = n*xdst + ydst;
+        for (int c = 0; c < nchan; ++c) {
+          dst[iddst*nchan + c].x = src[idsrc*nchan + c].x;
+          dst[iddst*nchan + c].y = src[idsrc*nchan + c].y;
+        }
+    }
+}
+
+/*
+__global__ void
+fftshift2 (float2 *dst, const int n, const int nchan)
 {
     float2 tmp;
     int dn = n / 2;
@@ -147,7 +182,7 @@ fftshift (float2 *dst, const int n, const int nchan)
         }
     }
 }
-
+*/
 
 __host__ void
 fft_init(cufftHandle *plan, const int nx, const int ny, const int nchan)
@@ -162,23 +197,23 @@ fft_init(cufftHandle *plan, const int nx, const int ny, const int nchan)
       inembed, istride, idist, CUFFT_C2C, nchan));
 }
 
-
+/*
 __host__ void
 fftwithshift (float2 *x, cufftHandle plan, const int j, const int n, const int nrep)
 {
-    fftshift<<<gridsize,blocksize,0,stream[j]>>>(x, n, nrep);
+    fftshift<<<threads,blocks,0,stream[j]>>>(x, n, nrep);
     cufftSafeCall(cufftExecC2C(plan, x, x, CUFFT_FORWARD));
-    fftshift<<<gridsize,blocksize,0,stream[j]>>>(x, n, nrep);
+    fftshift<<<threads,blocks,0,stream[j]>>>(x, n, nrep);
 }
 
 __host__ void
 ifftwithshift (float2 *x, cufftHandle plan, const int j, const int n, const int nrep)
 {
-    fftshift<<<gridsize,blocksize,0,stream[j]>>>(x, n, nrep);
+    fftshift<<<threads,blocks,0,stream[j]>>>(x, n, nrep);
     cufftSafeCall(cufftExecC2C(plan, x, x, CUFFT_INVERSE));
-    fftshift<<<gridsize,blocksize,0,stream[j]>>>(x, n, nrep);
+    fftshift<<<threads,blocks,0,stream[j]>>>(x, n, nrep);
 }
-
+*/
 __device__ void
 powit (float2 *A, const int n, const int niters)
 {
@@ -479,11 +514,11 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
     // udata: [NCHAN x NGRID x NGRID], nudata: NCHAN x NRO x NPE
     //float gridos = float(nxos) / float(nro); // gridosling factor
     float2 utmp[MAXCHAN];
-    const int blocksizex = 8; // TODO: optimize this blocking
-    const int blocksizey = 4;
-    const int warpsize = blocksizex*blocksizey;
-    //int nblockx = nxos / blocksizex;
-    int nblocky = nxos / blocksizey; // # of blocks along y dimension
+    const int blocksx = 8; // TODO: optimize this blocking
+    const int blocksy = 4;
+    const int warpsize = blocksx*blocksy;
+    //int nblockx = nxos / blocksx;
+    int nblocky = nxos / blocksy; // # of blocks along y dimension
     for (int tid = blockIdx.x * blockDim.x + threadIdx.x; tid < nxos*nxos; tid += blockDim.x * gridDim.x)
     {
         for (int ch = 0; ch < nchan; ch++)
@@ -495,8 +530,8 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
         int bx = z / nblocky;
         int by = z % nblocky;
         int zid = tid % warpsize;
-        int x = zid / blocksizey + blocksizex*bx;
-        int y = zid % blocksizey + blocksizey*by;
+        int x = zid / blocksy + blocksx*bx;
+        int y = zid % blocksy + blocksy*by;
         int id = x*nxos + y; // computed linear array index for uniform data
         x = -x + nxos/2;
         y = -y + nxos/2;
@@ -632,12 +667,12 @@ degridradial2d (
         int pe = id / nro; // my row and column in the non-uniform data
         int ro = id % nro;
         // my polar coordinates
-        float R = float(ro)/nro - 0.5f; // [-1/2,1/2)
+        float R = float(ro)/float(nro) - 0.5f; // [-1/2,1/2)
         float T = flag_golden_angle ? modang(PHI*(pe + skip_angles)) : pe*M_PI/float(npe) + M_PI/2;
         // my Cartesian coordinates
-        float X = n*(R*sinf(T) + 0.5f); // TODO: use _sincosf?
-        float Y = n*(R*cosf(T) + 0.5f); // [0, n)
-        float Weff = W / gridos;
+        float X = n*R*sinf(T) + 0.5f*n; // TODO: use _sincosf?
+        float Y = n*R*cosf(T) + 0.5f*n; // [0, n)
+        float Weff = W; // / gridos;
         for (int xu = ceilf(X-Weff); xu <= (X+Weff); ++xu) {
             float wgtx = gridkernel(xu-X, Weff, gridos);
             for (int yu = ceilf(Y-Weff); yu <= (Y+Weff); ++yu)
@@ -648,7 +683,7 @@ degridradial2d (
                 //    continue;
                 //float wgt = gridkernel(dx, W, gridos);
                 float wgt = wgtx * gridkernel(yu-Y, Weff, gridos);
-                int i = (xu + n) % n;
+                int i = (xu + n) % n; // periodic domain
                 int j = (yu + n) % n;
                 int offset = nrep*(i*n + j);
                 for (int c = 0; c < nrep; ++c) {
@@ -658,7 +693,7 @@ degridradial2d (
 
         }
         for (int c = 0; c < nrep; ++c) {
-            nudata[nrep*id + c] *= make_float2(0,-1) / (nro*npe*kernwidth);
+            nudata[nrep*id + c] /= (nro*npe);
         }
     }
 }
@@ -675,7 +710,7 @@ tron_init ()
   DPRINT("MULTI_GPU = %d\n", MULTI_GPU);
   DPRINT("NSTREAMS = %d\n", NSTREAMS);
   DPRINT("Using %d CUDA devices\n", ndevices);
-  DPRINT("Kernels configured with %d blocks of %d threads\n", gridsize, blocksize);
+  DPRINT("Kernels configured with %d blocks of %d threads\n", threads, blocks);
 
   // array sizes
   // TODO: this is wrong.  d_indatasize should just be the size of the work slice
@@ -748,16 +783,18 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
         {
             cuTry(cudaMemcpyAsync(d_nudata[j], h_indata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
             // reverse from non-uniform data to image
-            precompensate<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], nc*nt, nro, npe1work);
-            gridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], d_nudata[j], nxos, nc*nt, nro, npe1work, kernwidth,
+            precompensate<<<threads,blocks,0,stream[j]>>>(d_nudata[j], nc*nt, nro, npe1work);
+            gridradial2d<<<threads,blocks,0,stream[j]>>>(d_udata[j], d_nudata[j], nxos, nc*nt, nro, npe1work, kernwidth,
                 gridos, skip_angles+peoffset, flags.postcomp, flags.golden_angle);
-            ifftwithshift(d_udata[j], fft_plan_os[j], j, nxos, nt*nc);
-            crop<<<gridsize,blocksize,0,stream[j]>>>(d_coilimg[j], nx, ny, d_udata[j], nxos, nyos, nc*nt);
+            ifftshift<<<threads,blocks,0,stream[j]>>>(d_nudata[j], d_udata[j], nxos, nt*nc);
+            cufftSafeCall(cufftExecC2C(fft_plan_os[j], d_nudata[j], d_nudata[j], CUFFT_INVERSE));
+            fftshift<<<threads,blocks,0,stream[j]>>>(d_udata[j], d_nudata[j], nxos, nc*nt);
+            crop<<<threads,blocks,0,stream[j]>>>(d_coilimg[j], nx, ny, d_udata[j], nxos, nyos, nc*nt);
             // TODO: look at indims.c vs outdims.c to decide whether to coil combine and by how much (can compress)
-            //coilcombinewalsh<<<gridsize,blocksize,0,stream[j]>>>(d_img[j],d_coilimg[j], nx, nc, nt, 1); /* 0 works, 1 good, 3 better */
-            coilcombinesos<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], d_coilimg[j], nx, nc);
+            //coilcombinewalsh<<<threads,blocks,0,stream[j]>>>(d_img[j],d_coilimg[j], nx, nc, nt, 1); /* 0 works, 1 good, 3 better */
+            coilcombinesos<<<threads,blocks,0,stream[j]>>>(d_img[j], d_coilimg[j], nx, nc);
             scale = 1. / nx / gridos;
-            deapodkernel<<<gridsize,blocksize,0,stream[j]>>>(d_img[j], nx, 1*nt, kernwidth, gridos, scale);
+            deapodkernel<<<threads,blocks,0,stream[j]>>>(d_img[j], nx, 1*nt, kernwidth, gridos, scale);
 #ifdef CUDA_HOST_MALLOC
             cuTry(cudaMemcpyAsync(h_outdata + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
 #else
@@ -767,16 +804,20 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
         else
         {   // forward from image to non-uniform data
             cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
-            pad<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], nxos, d_img[j], nx, nc*nt);
-            scale = 1. / nx/ gridos;
-            deapodkernel<<<gridsize,blocksize,0,stream[j]>>>(d_udata[j], nxos, nc*nt, kernwidth, gridos, scale);
-            fftwithshift(d_udata[j], fft_plan_os[j], j, nxos, nc*nt);
-            degridradial2d<<<gridsize,blocksize,0,stream[j]>>>(d_nudata[j], d_udata[j], nxos, nc*nt,
+            //  pad<<<threads,blocks,0,stream[j]>>>(d_udata[j], nxos, d_img[j], nx, nc*nt);
+            scale = 1. / nx;
+            deapodkernel<<<threads,blocks,0,stream[j]>>>(d_img[j], nx, nc*nt, kernwidth, gridos, scale);
+            fftshift<<<threads,blocks,0,stream[j]>>>(d_udata[j], d_img[j], nx, nc*nt);
+            cufftSafeCall(cufftExecC2C(fft_plan[j], d_udata[j], d_img[j], CUFFT_FORWARD));
+            ifftshift<<<threads,blocks,0,stream[j]>>>(d_udata[j], d_img[j], nx, nc*nt);
+            degridradial2d<<<threads,blocks,0,stream[j]>>>(d_nudata[j], d_udata[j], nx, nc*nt,
                  nro, npe1work, kernwidth, skip_angles, flags.golden_angle);
 #ifdef CUDA_HOST_MALLOC
             cuTry(cudaMemcpyAsync(h_outdata + nc*nt*nro*npe1work*z, d_nudata[j], d_nudatasize, cudaMemcpyDeviceToHost, stream[j]));
+            //cuTry(cudaMemcpyAsync(h_outdata, d_udata[j], d_udatasize, cudaMemcpyDeviceToHost, stream[j]));
 #else
-            cuTry(cudaMemcpyAsync(h_outdata + nc*nt*nro*npe1work*z, d_nudata[j], d_nudatasize, cudaMemcpyDeviceToHost));
+            //cuTry(cudaMemcpyAsync(h_outdata + nc*nt*nro*npe1work*z, d_nudata[j], d_nudatasize, cudaMemcpyDeviceToHost));
+            cuTry(cudaMemcpyAsync(h_outdata /*+ nc*nt*nx*nx*z */, d_udata[j], d_udatasize, cudaMemcpyDeviceToHost));
 #endif
         }
     }

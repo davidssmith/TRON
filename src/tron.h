@@ -50,8 +50,8 @@
 #define MULTI_GPU       0
 #define NCHAN           6
 #define MAXCHAN         6
-static const int blocksize = 96;    // TWEAK: CUDA kernel parameters, optimize for your device
-static const int gridsize = 2048;
+static const int threads = 32;    // TWEAK: CUDA kernel parameters, optimize for your device
+static const int blocks = 512;
 
 extern "C" {  // don't mangle name, so can call from other languages
 

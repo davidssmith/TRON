@@ -2,7 +2,7 @@ CC=nvcc
 CFLAGS=-O3 -g -G -Wno-deprecated-gpu-targets --use_fast_math -D_FORCE_INLINES -DCUDA_HOST_MALLOC -DKERN_KB
 LFLAGS=-lcufft
 
-objects = tron.o ra.o
+objects = tron.o ra.o float16.o
 
 all: tron
 
