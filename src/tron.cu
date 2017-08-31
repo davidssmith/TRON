@@ -124,15 +124,19 @@ inline void __cufftSafeCall (cufftResult err, const char *file, const int line)
     }
 }
 
+enum fftshift_direction { FFT_SHIFT_FORWARD, FFT_SHIFT_INVERSE };
+
 __global__ void
-fftshift (float2 *dst, float2 *src, const int n, const int nchan)
+fftshift (float2 *dst, float2 *src, const int n, const int nchan, int direction)
 {
+    int offset = direction == FFT_SHIFT_FORWARD ? n/2 : n - n/2;
+
     for (int idsrc = blockIdx.x * blockDim.x + threadIdx.x; idsrc < n*n; idsrc += blockDim.x * gridDim.x)
     {
         int xsrc = idsrc / n;
         int ysrc = idsrc % n;
-        int xdst = (xsrc + n/2) % n;
-        int ydst = (ysrc + n/2) % n;
+        int xdst = (xsrc + offset) % n;
+        int ydst = (ysrc + offset) % n;
         int iddst = n*xdst + ydst;
         for (int c = 0; c < nchan; ++c) {
           dst[iddst*nchan + c].x = src[idsrc*nchan + c].x;
@@ -141,26 +145,9 @@ fftshift (float2 *dst, float2 *src, const int n, const int nchan)
     }
 }
 
-__global__ void
-ifftshift (float2 *dst, float2 *src, const int n, const int nchan)
-{
-    for (int idsrc = blockIdx.x * blockDim.x + threadIdx.x; idsrc < n*n; idsrc += blockDim.x * gridDim.x)
-    {
-        int xsrc = idsrc / n;
-        int ysrc = idsrc % n;
-        int xdst = (xsrc - n/2 + n) % n;
-        int ydst = (ysrc - n/2 + n) % n;
-        int iddst = n*xdst + ydst;
-        for (int c = 0; c < nchan; ++c) {
-          dst[iddst*nchan + c].x = src[idsrc*nchan + c].x;
-          dst[iddst*nchan + c].y = src[idsrc*nchan + c].y;
-        }
-    }
-}
 
-/*  TODO: USE THIS IF DIM IS EVEN?  FASTER?
 __global__ void
-fftshift2 (float2 *dst, const int n, const int nchan)
+fftshift_inplace (float2 *dst, const int n, const int nchan)
 {
     float2 tmp;
     int dn = n / 2;
@@ -182,7 +169,6 @@ fftshift2 (float2 *dst, const int n, const int nchan)
         }
     }
 }
-*/
 
 __host__ void
 fft_init(cufftHandle *plan, const int nx, const int ny, const int nchan)
@@ -197,23 +183,6 @@ fft_init(cufftHandle *plan, const int nx, const int ny, const int nchan)
       inembed, istride, idist, CUFFT_C2C, nchan));
 }
 
-/*
-__host__ void
-fftwithshift (float2 *x, cufftHandle plan, const int j, const int n, const int nrep)
-{
-    fftshift<<<threads,blocks,0,stream[j]>>>(x, n, nrep);
-    cufftSafeCall(cufftExecC2C(plan, x, x, CUFFT_FORWARD));
-    fftshift<<<threads,blocks,0,stream[j]>>>(x, n, nrep);
-}
-
-__host__ void
-ifftwithshift (float2 *x, cufftHandle plan, const int j, const int n, const int nrep)
-{
-    fftshift<<<threads,blocks,0,stream[j]>>>(x, n, nrep);
-    cufftSafeCall(cufftExecC2C(plan, x, x, CUFFT_INVERSE));
-    fftshift<<<threads,blocks,0,stream[j]>>>(x, n, nrep);
-}
-*/
 __device__ void
 powit (float2 *A, const int n, const int niters)
 {
@@ -376,8 +345,6 @@ gridkernel (const float x, const float kernwidth, const float sigma)
     return besseli0(alpha*f) / besseli0(alpha);
   } else
     return 0.0f;
-  //const float s = 0.33f; // ballparked from Jackson et al. 1991. IEEE TMI, 10(3), 473–8
-  //return expf(-0.5f*x*x/s/s);
 }
 
 __host__ __device__ inline float
@@ -466,36 +433,6 @@ crop (float2* dst, const int nxdst, const int nydst, const float2* __restrict__ 
     }
 }
 
-// TODO: eliminate this
-__global__ void
-copy (float2* dst, const float2* __restrict__ src, const int n)
-{
-    for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < n; id += blockDim.x * gridDim.x)
-        dst[id] = src[id];
-}
-
-__global__ void
-pad (float2* dst, const int ndst, const float2* __restrict__ src, const int nsrc, const int nchan)
-{
-    const int w = ndst > nsrc ? (ndst - nsrc) / 2 : 0;
-
-    // set whole array to zero first (not most efficient!)
-    for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < ndst*ndst; id += blockDim.x * gridDim.x)
-    {
-        for (int c = 0; c < nchan; ++c)
-            dst[nchan*id + c] = make_float2(0.f, 0.f);
-        int xdst = id / ndst;
-        int ydst = id % ndst;
-        if ((xdst - w > 0) && (xdst - w < nsrc) &&
-            (ydst - w > 0) && (ydst - w < nsrc))
-        {
-            size_t srcid = (xdst - w)*nsrc + (ydst - w);
-            for (int c = 0; c < nchan; ++c)
-                dst[nchan*id + c] = src[nchan*srcid + c];
-        }
-    }
-}
-
 extern "C" {  // don't mangle name, so can call from other languages
 
 /*
@@ -518,10 +455,11 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
     for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nxos*nxos; id += blockDim.x * gridDim.x)
     {
         for (int ch = 0; ch < nchan; ch++)
-          utmp[ch] = make_float2(0.f,0.f);
+            utmp[ch] = make_float2(0.f,0.f);
         // figure out which Cartesian point this thread is responsible for
         int y = id / nxos - nxos/2;
         int x = (id % nxos) - nxos/2;
+
         // more complicated, but faster ... can probably optimize better by sorting, though
         // int z = tid / warpsize; // not a real z, just a block label
         // int by = z / nblocky;
@@ -568,7 +506,7 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
                     float ky = r*sf; // [-nyos/2 ... nyos/2-1]
                     float wgt = gridkernel(kx-x, kernwidth, gridos)*gridkernel(ky-y, kernwidth, gridos);
                     if (flag_postcomp)
-                      sdc += wgt;
+                        sdc += wgt;
                     for (int ch = 0; ch < nchan; ch++) { // unrolled by 2 'cuz faster
                         //utmp[ch] += wgt*nudata[nchan*(nro*pe + r + nro/2) + ch];
                         //utmp[ch + 1] += wgt*nudata[nchan*(nro*pe + r + nro/2) + ch + 1];
@@ -578,6 +516,8 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
                 }
             }
         }
+
+        // TODO: change postcomp to a compile-time option? or delete?  or replace with iteration?
         if (flag_postcomp && sdc > 0.f)
             for (int ch = 0; ch < nchan; ++ch)
                 udata[nchan*id + ch] = utmp[ch] / sdc;
@@ -606,7 +546,8 @@ degridradial2d (
         int ro = id % nro;
         // my polar coordinates
         float R = float(ro)/float(nro) - 0.5f; // [-1/2,1/2)
-        float T = flag_golden_angle ? modang(PHI*(pe + skip_angles)) : pe*M_PI/float(npe) + M_PI/2;
+        float T = flag_golden_angle ? modang(PHI*(pe + skip_angles)) : float(pe)*M_PI/float(npe) + M_PI/2;
+
         // my Cartesian coordinates
         float X = n*R*sinf(T) + 0.5f*n; // TODO: use _sincosf?
         float Y = n*R*cosf(T) + 0.5f*n; // [0, n)
@@ -720,9 +661,9 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
             precompensate<<<threads,blocks,0,stream[j]>>>(d_nudata[j], nc*nt, nro, npe1work);
             gridradial2d<<<threads,blocks,0,stream[j]>>>(d_udata[j], d_nudata[j], nxos, nc*nt, nro, npe1work, kernwidth,
                 gridos, skip_angles+peoffset, flags.postcomp, flags.golden_angle);
-            ifftshift<<<threads,blocks,0,stream[j]>>>(d_nudata[j], d_udata[j], nxos, nt*nc);
+            fftshift<<<threads,blocks,0,stream[j]>>>(d_nudata[j], d_udata[j], nxos, nt*nc, FFT_SHIFT_INVERSE);
             cufftSafeCall(cufftExecC2C(fft_plan_os[j], d_nudata[j], d_nudata[j], CUFFT_INVERSE));
-            fftshift<<<threads,blocks,0,stream[j]>>>(d_udata[j], d_nudata[j], nxos, nc*nt);
+            fftshift<<<threads,blocks,0,stream[j]>>>(d_udata[j], d_nudata[j], nxos, nc*nt, FFT_SHIFT_FORWARD);
             crop<<<threads,blocks,0,stream[j]>>>(d_coilimg[j], nx, ny, d_udata[j], nxos, nyos, nc*nt);
             // TODO: look at nc to decide whether to coil combine and by how much (can compress)
             //coilcombinewalsh<<<threads,blocks,0,stream[j]>>>(d_img[j],d_coilimg[j], nx, nc, nt, 1); /* 0 works, 1 good, 3 better */
@@ -740,9 +681,9 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
             cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
             scale = 1. / nx;
             deapodkernel<<<threads,blocks,0,stream[j]>>>(d_img[j], nx, nc*nt, kernwidth, gridos, scale);
-            fftshift<<<threads,blocks,0,stream[j]>>>(d_udata[j], d_img[j], nx, nc*nt);
+            fftshift<<<threads,blocks,0,stream[j]>>>(d_udata[j], d_img[j], nx, nc*nt, FFT_SHIFT_FORWARD);
             cufftSafeCall(cufftExecC2C(fft_plan[j], d_udata[j], d_img[j], CUFFT_FORWARD));
-            ifftshift<<<threads,blocks,0,stream[j]>>>(d_udata[j], d_img[j], nx, nc*nt);
+            fftshift<<<threads,blocks,0,stream[j]>>>(d_udata[j], d_img[j], nx, nc*nt, FFT_SHIFT_INVERSE);
             degridradial2d<<<threads,blocks,0,stream[j]>>>(d_nudata[j], d_udata[j], nx, nc*nt,
                  nro, npe1work, kernwidth, skip_angles, flags.golden_angle);
 #ifdef CUDA_HOST_MALLOC
@@ -858,8 +799,6 @@ main (int argc, char *argv[])
     assert(ra_in.ndims == 5);
     DPRINT("Sanity check: indata[0] = %f + %f i\n", h_indata[0].x, h_indata[0].y);
     DPRINT("indims = {%llu, %llu, %llu, %llu, %llu}\n", ra_in.dims[0], ra_in.dims[1], ra_in.dims[2], ra_in.dims[3], ra_in.dims[4]);
-
-
     DPRINT("WARNING: Assuming square Cartesian dimensions for now.\n");
 
     ra_out.ndims = 5;
@@ -928,6 +867,7 @@ main (int argc, char *argv[])
     dprint(h_outdatasize,ld);
     assert(nc % 2 == 0 || nc == 1); // only single or even dimensions implemented for now
 
+    dprint(data_undersamp,f);
     dprint(gridos,f);
     dprint(nc,d);
     dprint(nt,d);
