@@ -5,10 +5,10 @@ make &&
   ./tron -v ../data/shepplogan.ra sl_data_tron.ra
 }  && {
   echo ------- re-gridding
-  ./tron -a -v sl_data_irt.ra  sl_irt_tron.ra
+  ./tron -a -v -o 1.5 sl_data_irt.ra  sl_irt_tron.ra
   #/tron -a sl_data_gn.ra   sl_gn_tron.ra
   #/tron -a sl_data_bart.ra sl_bart_tron.ra
-  ./tron -a -v sl_data_tron.ra sl_tron_tron.ra
+  ./tron -a -v -o 1.5 sl_data_tron.ra sl_tron_tron.ra
 }
 
 VIEWER=$HOME/git/ra/python/raview

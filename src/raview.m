@@ -1,10 +1,10 @@
 % raview.m
 function raview(filename)
 d = raread(filename);
-r = real(mosaic(d));
-i = imag(mosaic(d));
-m = abs(mosaic(d));
-p = angle(mosaic(d))/pi;
+r = real(squeeze(d));
+i = imag(squeeze(d));
+m = abs(squeeze(d));
+p = angle(squeeze(d))/pi;
 subplot(221);
 doplot(r, 'real');
 subplot(222);
