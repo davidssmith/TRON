@@ -2,22 +2,22 @@
 make &&
 {
   echo ------- degridding
-  ./tron -v -u 0.25 ../data/shepplogan.ra sl_data_tron.ra
+  ./tron -v -u 0.05 ../data/shepplogan255.ra sl_data_tron.ra
 }  && {
   echo ------- re-gridding
   #./tron -a -v sl_data_irt.ra  sl_irt_tron.ra
   #/tron -a sl_data_gn.ra   sl_gn_tron.ra
   #/tron -a sl_data_bart.ra sl_bart_tron.ra
-  ./tron -a -v -o 2.25 -u 0.25 sl_data_tron.ra sl_tron_tron.ra
+  ./tron -a -v -o 1.15 sl_data_tron.ra sl_tron_tron.ra
 }
 
 VIEWER=$HOME/git/ra/python/raview
 #echo TRON DATA
-#$VIEWER sl_data_tron.ra
+$VIEWER sl_data_tron.ra -l
 #echo IRT DATA
 #$VIEWER sl_data_irt.ra -l
 #echo TRON-TRON
-#$VIEWER sl_tron_tron.ra
+$VIEWER sl_tron_tron.ra
 #echo TRON-TRON nz
 #$VIEWER sl_tron_tron_1.ra
 #echo IRT-TRON

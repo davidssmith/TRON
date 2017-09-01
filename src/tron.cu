@@ -60,7 +60,7 @@ static size_t d_coilimgsize; // multi-coil image size
 static size_t d_imgsize; // coil-combined image size
 static size_t h_outdatasize;
 
-// RECON CONFIGURATION
+// DEFAULT RECON CONFIGURATION
 static float gridos = 2.f;  // TODO: compute ngrid from nx, ny and oversamp
 static float kernwidth = 2.f;
 static float data_undersamp = 1.f;
@@ -662,9 +662,9 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
             gridradial2d<<<threads,blocks,0,stream[j]>>>(d_udata[j], d_nudata[j], nxos, nc*nt, nro, npe1work, kernwidth,
                 gridos, skip_angles+peoffset, flags.postcomp, flags.golden_angle);
             fftshift<<<threads,blocks,0,stream[j]>>>(d_nudata[j], d_udata[j], nxos, nt*nc, FFT_SHIFT_INVERSE);
-            cufftSafeCall(cufftExecC2C(fft_plan_os[j], d_nudata[j], d_nudata[j], CUFFT_INVERSE));
-            fftshift<<<threads,blocks,0,stream[j]>>>(d_udata[j], d_nudata[j], nxos, nc*nt, FFT_SHIFT_FORWARD);
-            crop<<<threads,blocks,0,stream[j]>>>(d_coilimg[j], nx, ny, d_udata[j], nxos, nyos, nc*nt);
+            cufftSafeCall(cufftExecC2C(fft_plan_os[j], d_nudata[j], d_udata[j], CUFFT_INVERSE));
+            fftshift<<<threads,blocks,0,stream[j]>>>(d_nudata[j], d_udata[j], nxos, nc*nt, FFT_SHIFT_FORWARD);
+            crop<<<threads,blocks,0,stream[j]>>>(d_coilimg[j], nx, ny, d_nudata[j], nxos, nyos, nc*nt);
             // TODO: look at nc to decide whether to coil combine and by how much (can compress)
             //coilcombinewalsh<<<threads,blocks,0,stream[j]>>>(d_img[j],d_coilimg[j], nx, nc, nt, 1); /* 0 works, 1 good, 3 better */
             coilcombinesos<<<threads,blocks,0,stream[j]>>>(d_img[j], d_coilimg[j], nx, nc);
@@ -820,7 +820,10 @@ main (int argc, char *argv[])
         ny = nro / 2;
         nxos = nx * gridos;
         nyos = ny * gridos;
-        npe1work = data_undersamp * nro;  // TODO: fix this hack
+        if (npe1 <= nro * data_undersamp)  /* must be implicitly undersampled */
+            npe1work = npe1;
+        else
+            npe1work = nro * data_undersamp;
         if (prof_slide == 0)
             prof_slide = npe1work;
         if (flags.koosh) {
