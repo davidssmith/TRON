@@ -456,9 +456,11 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
     {
         for (int ch = 0; ch < nchan; ch++)
             utmp[ch] = make_float2(0.f,0.f);
-        // figure out which Cartesian point this thread is responsible for
-        int y = id / nxos - nxos/2;
-        int x = (id % nxos) - nxos/2;
+
+        // figure out this thread's Cartesian and radial coordinates
+        int Y = id / nxos - nxos/2;
+        int X = (id % nxos) - nxos/2;
+        float R = hypotf(float(X), float(Y));
 
         // more complicated, but faster ... can probably optimize better by sorting, though
         // int z = tid / warpsize; // not a real z, just a block label
@@ -471,40 +473,141 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
         // x -= nxos/2;
         // y -= nxos/2;
 
-        float gridpoint_radius = hypotf(float(x), float(y));
-        int rmax = fminf(floorf(gridpoint_radius + kernwidth), nro/2-1);
-        int rmin = fmaxf(ceilf(gridpoint_radius - kernwidth), 0);  // define a circular band around the uniform point
+        // define a circular band around the uniform point
+        int Rmax = fminf(floorf(R + sqrtf(2.f)*kernwidth), nxos/2-1);
+        int Rmin = fmaxf(ceilf(R - sqrtf(2.f)*kernwidth), 0);  
+
+        // zero the temporary work array
         for (int ch = 0; ch < nchan; ++ch)
              udata[nchan*id + ch] = make_float2(0.f,0.f);
-        if (rmin > nro/2-1) continue; // outside non-uniform data area
+
+        if (Rmin > nro/2-1) continue; // skip gridding if outside non-uniform data area
 
         float sdc = 0.f;
+
         // get uniform point coordinate in non-uniform system, (r,theta) in this case
-        float gridpoint_theta = modang(atan2f(float(y),float(x)));
-        float dtheta = atan2f(kernwidth, gridpoint_radius); // narrow that band to an arc
-        // profiles must line within an arc of 2*dtheta to be counted
+        float T = modang(atan2f(float(Y),float(X)));
+        float dT = atan2f(kernwidth, R); // narrow that band to an arc
+        // profiles must line within an arc of 2*dT to be counted
 
         // TODO: replace this logic with boolean function that can be swapped out
         // for diff acquisitions
         for (int pe = 0; pe < npe; ++pe)
         {
-            float profile_theta = flag_golden_angle ? modang(PHI * float(pe + skip_angles)) : float(pe) * M_PI / float(npe) + M_PI/2;
-            float dtheta1 = minangulardist(profile_theta, gridpoint_theta);
-            if (dtheta1 <= dtheta)
+            float t = flag_golden_angle ? modang(PHI * float(pe + skip_angles)) : float(pe) * M_PI / float(npe) + M_PI/2;
+            float dt1 = minangulardist(t, T);
+            if (dt1 <= dT)
             {
                 float sf, cf;
-                __sincosf(profile_theta, &sf, &cf);
+                __sincosf(t, &sf, &cf);
                 // sf *= gridos;
                 // cf *= gridos;
-                // TODO: fix this logic, try using without dtheta1
-                int rstart = fabs(profile_theta-gridpoint_theta) < 0.5f*M_PI ? rmin : -rmax;
-                int rend   = fabs(profile_theta-gridpoint_theta) < 0.5f*M_PI ? rmax : -rmin;
+                // TODO: fix this logic, try using without dt1
+                int rstart = fabs(t-T) < 0.5f*M_PI ? Rmin : -Rmax;
+                int rend   = fabs(t-T) < 0.5f*M_PI ? Rmax : -Rmin;
                 // TODO: add periodic BCs
                 for (int r = rstart; r <= rend; ++r)  // for each POSITIVE non-uniform ro point
                 {
                     float kx = r*cf; // [-nxos/2 ... nxos/2-1]    // TODO: compute distance in radial coordinates?
                     float ky = r*sf; // [-nyos/2 ... nyos/2-1]
-                    float wgt = gridkernel(kx-x, kernwidth, gridos)*gridkernel(ky-y, kernwidth, gridos);
+                    float wgt = gridkernel(kx-X, kernwidth, gridos)*gridkernel(ky-Y, kernwidth, gridos);
+                    if (flag_postcomp)
+                        sdc += wgt;
+                    for (int ch = 0; ch < nchan && wgt > 0.f; ch++) { // unrolled by 2 'cuz faster
+                        //utmp[ch] += wgt*nudata[nchan*(nro*pe + r + nro/2) + ch];
+                        //utmp[ch + 1] += wgt*nudata[nchan*(nro*pe + r + nro/2) + ch + 1];
+                        int ridx = (r * nro) / nxos;
+                        utmp[ch].x = __fmaf_rn(wgt,nudata[nchan*(nro*pe + ridx + nro/2) + ch].x, utmp[ch].x);
+                        utmp[ch].y = __fmaf_rn(wgt,nudata[nchan*(nro*pe + ridx + nro/2) + ch].y, utmp[ch].y);
+                    }
+                }
+            }
+        }
+
+        // TODO: change postcomp to a compile-time option? or delete?  or replace with iteration?
+        if (flag_postcomp && sdc > 0.f)
+            for (int ch = 0; ch < nchan; ++ch)
+                udata[nchan*id + ch] = utmp[ch] / sdc;
+        else
+            for (int ch = 0; ch < nchan; ++ch)
+                udata[nchan*id + ch] = utmp[ch];
+    }
+}
+
+
+__global__ void
+gridradial2d_old (float2 *udata, const float2 * __restrict__ nudata, const int nxos,
+    const int nchan, const int nro, const int npe, const float kernwidth, const float gridos,
+const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
+{
+    // udata: [NCHAN x NGRID x NGRID], nudata: NCHAN x NRO x NPE
+    //float gridos = float(nxos) / float(nro); // gridosling factor
+    float2 utmp[MAXCHAN];
+    //const int blocksx = 8; // TODO: optimize this blocking
+    //const int blocksy = 4;
+    //const int warpsize = blocksx*blocksy;
+    //int nblockx = nxos / blocksx;
+    //int nblocky = nxos / blocksy; // # of blocks along y dimension
+
+    for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nxos*nxos; id += blockDim.x * gridDim.x)
+    {
+        for (int ch = 0; ch < nchan; ch++)
+            utmp[ch] = make_float2(0.f,0.f);
+
+        // figure out this thread's Cartesian and radial coordinates
+        int Y = id / nxos - nxos/2;
+        int X = (id % nxos) - nxos/2;
+        float R = hypotf(float(X), float(Y));
+
+        // more complicated, but faster ... can probably optimize better by sorting, though
+        // int z = tid / warpsize; // not a real z, just a block label
+        // int by = z / nblocky;
+        // int bx = z % nblocky;
+        // int zid = tid % warpsize;
+        // int y = zid / blocksy + blocksx*by;
+        // int x = zid % blocksy + blocksy*bx;
+        // int id = y*nxos + x; // computed linear array index for uniform data
+        // x -= nxos/2;
+        // y -= nxos/2;
+
+        // define a circular band around the uniform point
+        int Rmax = fminf(floorf(R + sqrtf(2.f)*kernwidth), nxos/2-1);
+        int Rmin = fmaxf(ceilf(R - sqrtf(2.f)*kernwidth), 0);  
+
+        // zero the temporary work array
+        for (int ch = 0; ch < nchan; ++ch)
+             udata[nchan*id + ch] = make_float2(0.f,0.f);
+
+        if (Rmin > nro/2-1) continue; // skip gridding if outside non-uniform data area
+
+        float sdc = 0.f;
+
+        // get uniform point coordinate in non-uniform system, (r,theta) in this case
+        float T = modang(atan2f(float(Y),float(X)));
+        float dT = atan2f(kernwidth, R); // narrow that band to an arc
+        // profiles must line within an arc of 2*dT to be counted
+
+        // TODO: replace this logic with boolean function that can be swapped out
+        // for diff acquisitions
+        for (int pe = 0; pe < npe; ++pe)
+        {
+            float t = flag_golden_angle ? modang(PHI * float(pe + skip_angles)) : float(pe) * M_PI / float(npe) + M_PI/2;
+            float dt1 = minangulardist(t, T);
+            if (dt1 <= dT)
+            {
+                float sf, cf;
+                __sincosf(t, &sf, &cf);
+                // sf *= gridos;
+                // cf *= gridos;
+                // TODO: fix this logic, try using without dt1
+                int rstart = fabs(t-T) < 0.5f*M_PI ? Rmin : -Rmax;
+                int rend   = fabs(t-T) < 0.5f*M_PI ? Rmax : -Rmin;
+                // TODO: add periodic BCs
+                for (int r = rstart; r <= rend; ++r)  // for each POSITIVE non-uniform ro point
+                {
+                    float kx = r*cf; // [-nxos/2 ... nxos/2-1]    // TODO: compute distance in radial coordinates?
+                    float ky = r*sf; // [-nyos/2 ... nyos/2-1]
+                    float wgt = gridkernel(kx-X, kernwidth, gridos)*gridkernel(ky-Y, kernwidth, gridos);
                     if (flag_postcomp)
                         sdc += wgt;
                     for (int ch = 0; ch < nchan; ch++) { // unrolled by 2 'cuz faster
