@@ -474,8 +474,8 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
         // y -= nxos/2;
 
         // define a circular band around the uniform point
-        int Rmax = fminf(floorf(R + sqrtf(2.f)*kernwidth), nxos/2-1);
-        int Rmin = fmaxf(ceilf(R - sqrtf(2.f)*kernwidth), 0);  
+        int Rmax = fminf(floorf(R + kernwidth), nxos/2-1);
+        int Rmin = fmaxf(ceilf(R - kernwidth), 0);
 
         // zero the temporary work array
         for (int ch = 0; ch < nchan; ++ch)
@@ -494,14 +494,12 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
         // for diff acquisitions
         for (int pe = 0; pe < npe; ++pe)
         {
-            float t = flag_golden_angle ? modang(PHI * float(pe + skip_angles)) : float(pe) * M_PI / float(npe) + M_PI/2;
+            float t = flag_golden_angle ? modang(PHI * float(pe + skip_angles)) : float(pe) * M_PI / float(npe); // + M_PI/2;
             float dt1 = minangulardist(t, T);
             if (dt1 <= dT)
             {
                 float sf, cf;
                 __sincosf(t, &sf, &cf);
-                // sf *= gridos;
-                // cf *= gridos;
                 // TODO: fix this logic, try using without dt1
                 int rstart = fabs(t-T) < 0.5f*M_PI ? Rmin : -Rmax;
                 int rend   = fabs(t-T) < 0.5f*M_PI ? Rmax : -Rmin;
@@ -510,111 +508,14 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
                 {
                     float kx = r*cf; // [-nxos/2 ... nxos/2-1]    // TODO: compute distance in radial coordinates?
                     float ky = r*sf; // [-nyos/2 ... nyos/2-1]
-                    float wgt = gridkernel(kx-X, kernwidth, gridos)*gridkernel(ky-Y, kernwidth, gridos);
+                    float wgt = gridkernel(kx-X, kernwidth, gridos)*gridkernel(ky-Y, kernwidth, gridos) / npe / sqrtf(gridos);
                     if (flag_postcomp)
                         sdc += wgt;
-                    for (int ch = 0; ch < nchan && wgt > 0.f; ch++) { // unrolled by 2 'cuz faster
-                        //utmp[ch] += wgt*nudata[nchan*(nro*pe + r + nro/2) + ch];
-                        //utmp[ch + 1] += wgt*nudata[nchan*(nro*pe + r + nro/2) + ch + 1];
-                        int ridx = (r * nro) / nxos;
+                    int ridx = (r * nro) / nxos;
+                    for (int ch = 0; ch < nchan && wgt > 0.f; ch++) {
+                        //utmp[ch] += wgt*nudata[nchan*(nro*pe + ridx + nro/2) + ch];
                         utmp[ch].x = __fmaf_rn(wgt,nudata[nchan*(nro*pe + ridx + nro/2) + ch].x, utmp[ch].x);
                         utmp[ch].y = __fmaf_rn(wgt,nudata[nchan*(nro*pe + ridx + nro/2) + ch].y, utmp[ch].y);
-                    }
-                }
-            }
-        }
-
-        // TODO: change postcomp to a compile-time option? or delete?  or replace with iteration?
-        if (flag_postcomp && sdc > 0.f)
-            for (int ch = 0; ch < nchan; ++ch)
-                udata[nchan*id + ch] = utmp[ch] / sdc;
-        else
-            for (int ch = 0; ch < nchan; ++ch)
-                udata[nchan*id + ch] = utmp[ch];
-    }
-}
-
-
-__global__ void
-gridradial2d_old (float2 *udata, const float2 * __restrict__ nudata, const int nxos,
-    const int nchan, const int nro, const int npe, const float kernwidth, const float gridos,
-const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
-{
-    // udata: [NCHAN x NGRID x NGRID], nudata: NCHAN x NRO x NPE
-    //float gridos = float(nxos) / float(nro); // gridosling factor
-    float2 utmp[MAXCHAN];
-    //const int blocksx = 8; // TODO: optimize this blocking
-    //const int blocksy = 4;
-    //const int warpsize = blocksx*blocksy;
-    //int nblockx = nxos / blocksx;
-    //int nblocky = nxos / blocksy; // # of blocks along y dimension
-
-    for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nxos*nxos; id += blockDim.x * gridDim.x)
-    {
-        for (int ch = 0; ch < nchan; ch++)
-            utmp[ch] = make_float2(0.f,0.f);
-
-        // figure out this thread's Cartesian and radial coordinates
-        int Y = id / nxos - nxos/2;
-        int X = (id % nxos) - nxos/2;
-        float R = hypotf(float(X), float(Y));
-
-        // more complicated, but faster ... can probably optimize better by sorting, though
-        // int z = tid / warpsize; // not a real z, just a block label
-        // int by = z / nblocky;
-        // int bx = z % nblocky;
-        // int zid = tid % warpsize;
-        // int y = zid / blocksy + blocksx*by;
-        // int x = zid % blocksy + blocksy*bx;
-        // int id = y*nxos + x; // computed linear array index for uniform data
-        // x -= nxos/2;
-        // y -= nxos/2;
-
-        // define a circular band around the uniform point
-        int Rmax = fminf(floorf(R + sqrtf(2.f)*kernwidth), nxos/2-1);
-        int Rmin = fmaxf(ceilf(R - sqrtf(2.f)*kernwidth), 0);  
-
-        // zero the temporary work array
-        for (int ch = 0; ch < nchan; ++ch)
-             udata[nchan*id + ch] = make_float2(0.f,0.f);
-
-        if (Rmin > nro/2-1) continue; // skip gridding if outside non-uniform data area
-
-        float sdc = 0.f;
-
-        // get uniform point coordinate in non-uniform system, (r,theta) in this case
-        float T = modang(atan2f(float(Y),float(X)));
-        float dT = atan2f(kernwidth, R); // narrow that band to an arc
-        // profiles must line within an arc of 2*dT to be counted
-
-        // TODO: replace this logic with boolean function that can be swapped out
-        // for diff acquisitions
-        for (int pe = 0; pe < npe; ++pe)
-        {
-            float t = flag_golden_angle ? modang(PHI * float(pe + skip_angles)) : float(pe) * M_PI / float(npe) + M_PI/2;
-            float dt1 = minangulardist(t, T);
-            if (dt1 <= dT)
-            {
-                float sf, cf;
-                __sincosf(t, &sf, &cf);
-                // sf *= gridos;
-                // cf *= gridos;
-                // TODO: fix this logic, try using without dt1
-                int rstart = fabs(t-T) < 0.5f*M_PI ? Rmin : -Rmax;
-                int rend   = fabs(t-T) < 0.5f*M_PI ? Rmax : -Rmin;
-                // TODO: add periodic BCs
-                for (int r = rstart; r <= rend; ++r)  // for each POSITIVE non-uniform ro point
-                {
-                    float kx = r*cf; // [-nxos/2 ... nxos/2-1]    // TODO: compute distance in radial coordinates?
-                    float ky = r*sf; // [-nyos/2 ... nyos/2-1]
-                    float wgt = gridkernel(kx-X, kernwidth, gridos)*gridkernel(ky-Y, kernwidth, gridos);
-                    if (flag_postcomp)
-                        sdc += wgt;
-                    for (int ch = 0; ch < nchan; ch++) { // unrolled by 2 'cuz faster
-                        //utmp[ch] += wgt*nudata[nchan*(nro*pe + r + nro/2) + ch];
-                        //utmp[ch + 1] += wgt*nudata[nchan*(nro*pe + r + nro/2) + ch + 1];
-                        utmp[ch].x = __fmaf_rn(wgt,nudata[nchan*(nro*pe + r + nro/2) + ch].x, utmp[ch].x);
-                        utmp[ch].y = __fmaf_rn(wgt,nudata[nchan*(nro*pe + r + nro/2) + ch].y, utmp[ch].y);
                     }
                 }
             }
@@ -636,26 +537,68 @@ __global__ void
 degridradial2d (
     /* udata: [NCHAN x NGRID x NGRID], nudata: NCHAN x NRO x NPE */
     float2 *nudata, const float2 * __restrict__ udata, const int n, const int nrep,
-    const int nro, const int npe, const float kernwidth, const int skip_angles,
+    const int nro, const int npe, const float W, const float gridos, const int skip_angles,
     const int flag_golden_angle)
 {
-    const float gridos = nro / float(n);
-    const float W = kernwidth;
     for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nro*npe; id += blockDim.x * gridDim.x)
     {
         for (int c = 0; c < nrep; ++c) // zero my assigned unequal point
             nudata[nrep*id + c] = make_float2(0.f, 0.f);
         int pe = id / nro; // my row and column in the non-uniform data
         int ro = id % nro;
-        // my polar coordinates
+        // thread's polar coordinates
+        // TODO: is this R correct?
+        float R = float(ro)/float(nro) - 0.5f; // [-1/2,1/2)
+        float T = flag_golden_angle ? modang(PHI*(pe + skip_angles)) : float(pe)*M_PI/float(npe);
+
+        // thread's Cartesian coordinates
+        float X = n*R*sinf(T) + (n + 1)/2; // TODO: use _sincosf?
+        float Y = n*R*cosf(T) + (n + 1)/2; // [0, n)
+        for (int xu = ceilf(X-W); xu <= (X+W); ++xu)
+         {
+            float wgtx = gridkernel(xu-X, W, gridos) / n;
+            for (int yu = ceilf(Y-W); yu <= (Y+W); ++yu)
+            {   // loop through contributing Cartesian points
+                // TODO: optimize this
+                //float dx = sqrtf((xu-X)*(xu-X) + (yu-Y)*(yu-Y));
+                //if (dx > W)
+                //    continue;
+                //float wgt = gridkernel(dx, W, gridos);
+                float wgt = wgtx * gridkernel(yu-Y, W, gridos);
+                int i = (xu + n) % n; // periodic domain
+                int j = (yu + n) % n;
+                int offset = nrep*(i*n + j);
+                for (int c = 0; c < nrep; ++c)
+                    nudata[nrep*id + c] += wgt*udata[offset + c];
+            }
+
+        }
+    }
+}
+__global__ void
+degridradial2d_old (
+    /* udata: [NCHAN x NGRID x NGRID], nudata: NCHAN x NRO x NPE */
+    float2 *nudata, const float2 * __restrict__ udata, const int n, const int nrep,
+    const int nro, const int npe, const float W, const float gridos, const int skip_angles,
+    const int flag_golden_angle)
+{
+    for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nro*npe; id += blockDim.x * gridDim.x)
+    {
+        for (int c = 0; c < nrep; ++c) // zero my assigned unequal point
+            nudata[nrep*id + c] = make_float2(0.f, 0.f);
+        int pe = id / nro; // my row and column in the non-uniform data
+        int ro = id % nro;
+        // thread's polar coordinates
+        // TODO: is this R correct?
         float R = float(ro)/float(nro) - 0.5f; // [-1/2,1/2)
         float T = flag_golden_angle ? modang(PHI*(pe + skip_angles)) : float(pe)*M_PI/float(npe) + M_PI/2;
 
-        // my Cartesian coordinates
-        float X = n*R*sinf(T) + 0.5f*n; // TODO: use _sincosf?
-        float Y = n*R*cosf(T) + 0.5f*n; // [0, n)
-        for (int xu = ceilf(X-W); xu <= (X+W); ++xu) {
-            float wgtx = gridkernel(xu-X, W, gridos) / nro / npe;
+        // thread's Cartesian coordinates
+        float X = n*R*sinf(T) + (n + 1)/2; // TODO: use _sincosf?
+        float Y = n*R*cosf(T) + (n + 1)/2; // [0, n)
+        for (int xu = ceilf(X-W); xu <= (X+W); ++xu)
+         {
+            float wgtx = gridkernel(xu-X, W, gridos) / n;
             for (int yu = ceilf(Y-W); yu <= (Y+W); ++yu)
             {   // loop through contributing Cartesian points
                 // TODO: optimize this
@@ -788,7 +731,7 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
             cufftSafeCall(cufftExecC2C(fft_plan[j], d_udata[j], d_img[j], CUFFT_FORWARD));
             fftshift<<<threads,blocks,0,stream[j]>>>(d_udata[j], d_img[j], nx, nc*nt, FFT_SHIFT_INVERSE);
             degridradial2d<<<threads,blocks,0,stream[j]>>>(d_nudata[j], d_udata[j], nx, nc*nt,
-                 nro, npe1work, kernwidth, skip_angles, flags.golden_angle);
+                 nro, npe1work, kernwidth, gridos, skip_angles, flags.golden_angle);
 #ifdef CUDA_HOST_MALLOC
             cuTry(cudaMemcpyAsync(h_outdata + nc*nt*nro*npe1work*z, d_nudata[j], d_nudatasize, cudaMemcpyDeviceToHost, stream[j]));
             //cuTry(cudaMemcpyAsync(h_outdata, d_udata[j], d_udatasize, cudaMemcpyDeviceToHost, stream[j]));

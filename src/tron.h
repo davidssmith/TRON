@@ -64,7 +64,7 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle);
 /*  generate 2D radial data from an input 2D image */
 __global__ void degridradial2d (
     float2 *nudata, const float2 * __restrict__ udata, const int nimg,
-    const int nchan, const int nro, const int npe, const float kernwidth,
+    const int nchan, const int nro, const int npe, const float kernwidth, const float gridos, 
     const int skip_angles, const int flag_golden_angle);
 
 /*  Reconstruct images from 2D radial data.  This host routine calls the appropriate

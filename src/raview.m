@@ -3,7 +3,7 @@ function raview(filename)
 d = raread(filename);
 r = real(squeeze(d));
 i = imag(squeeze(d));
-m = (abs(squeeze(d)));
+m = log(abs(squeeze(d)));
 p = angle(squeeze(d))/pi;
 subplot(221);
 doplot(r, 'real');

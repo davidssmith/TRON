@@ -21,7 +21,7 @@ BART = 3;
 TRON = 4;
 
 %% Read phantom data
-image = squeeze(raread('../data/shepplogan.ra'));
+image = double(squeeze(raread('../data/shepplogan101.ra')));
 N = size(image,1);
 nro = 2*N;
 npe = 2*N;
@@ -30,7 +30,7 @@ npe = 2*N;
 traj = zeros(3,nro,npe);
 r = 2*pi*(0:nro-1)/nro - pi;
 for pe = 1:npe
-    theta = (pe-1)*pi / npe + pi/2;
+    theta = (pe-1)*pi / npe;
     traj(1,:,pe) = r *cos(theta);
     traj(2,:,pe) = r* sin(theta);
 end
@@ -65,26 +65,33 @@ G = gpuNUFFT(Kgn/2/pi,w,osf,wg,sw,[N,N],[],true);
 
 
 %% Everyone degrids
-data_irt = reshape(nufft(image, st),1,1, nro,npe) / nro/npe;
+data_irt = reshape(nufft(image, st),1,1, nro,npe) / N;
 rawrite(single(data_irt), 'sl_data_irt.ra', 1);
 
-data_gn = reshape(G*image(:), 1, 1, nro, npe) / sqrt(nro*npe);
+data_gn = reshape(G*image(:), 1, 1, nro, npe);
 rawrite(single(data_gn), 'sl_data_gn.ra', 1);
 
-data_bart = reshape(bart('nufft -c', traj*nro/4/pi, image), 1, 1, nro, npe) / sqrt(nro*npe);
+data_bart = reshape(bart('nufft -c', traj*nro/4/pi, image), 1, 1, nro, npe);
 rawrite(single(data_bart), 'sl_data_bart.ra', 1);
 
-!./tron -v ../data/shepplogan.ra sl_data_tron.ra 
-data_tron = double(raread('sl_data_tron.ra'));
+!./shepplogan.sh 
 
 %% Convert to double
 data_gn = double(data_gn);
 data_bart = double(data_bart);
 
+
 %% Plot the data
-figure(1);
+
 data_tron = double(raread('sl_data_tron.ra'));
-imagesc(sqrt(abs([squeeze(data_irt), squeeze(data_gn); squeeze(data_bart), squeeze(data_tron)*20/N])));
+
+figure(1);
+xirt = (abs(squeeze(data_irt)));
+subplot(221); imagesc((abs(squeeze(data_irt)))); title('IRT'); colorbar;
+subplot(222); imagesc((abs(squeeze(data_gn)))-xirt); title('gpuNUFFT'); colorbar;
+subplot(223); imagesc((abs(squeeze(data_bart)))-xirt); title('BART'); colorbar;
+subplot(224); imagesc((abs(squeeze(data_tron)))-xirt); title('TRON'); colorbar;
+colormap('default')
 
 %% Everyone grids everyone else
 
