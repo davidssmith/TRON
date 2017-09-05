@@ -21,7 +21,7 @@ BART = 3;
 TRON = 4;
 
 %% Read phantom data
-image = double(squeeze(raread('../data/shepplogan101.ra')));
+image = double(squeeze(raread('../data/shepplogan.ra')));
 N = size(image,1);
 nro = 2*N;
 npe = 2*N;
@@ -96,25 +96,25 @@ colormap('default')
 %% Everyone grids everyone else
 
 
-image_irt_irt = real(nufft_adj(data_irt(:) .* w(:), st));
-image_gn_irt = real(nufft_adj(data_gn(:) .* w(:), st));
-image_bart_irt = real(nufft_adj(data_bart(:) .* w(:), st));
-image_tron_irt = real(nufft_adj(data_tron(:) .* w(:), st));
+image_irt_irt = (nufft_adj(data_irt(:) .* w(:)/N, st));
+image_gn_irt = (nufft_adj(data_gn(:) .* w(:)/N, st));
+image_bart_irt = (nufft_adj(data_bart(:) .* w(:)/N, st));
+image_tron_irt = (nufft_adj(data_tron(:) .* w(:)/N, st));
 
-image_irt_gn = reshape(real(G'*(data_irt(:) .* w(:))), N, N) / wg^3;
-image_gn_gn = reshape(real(G'*(data_gn(:) .* w(:))), N, N) / wg^3;
-image_bart_gn = reshape(real(G'*(data_bart(:) .* w(:))), N, N) / wg^3;
-image_tron_gn = reshape(real(G'*(data_tron(:) .* w(:))), N, N) / wg^3;
+image_irt_gn = reshape((G'*(data_irt(:))), N, N) / wg^3;
+image_gn_gn = reshape((G'*(data_gn(:))), N, N) / wg^3;
+image_bart_gn = reshape((G'*(data_bart(:))), N, N) / wg^3;
+image_tron_gn = reshape((G'*(data_tron(:) )), N, N) / wg^3;
 
 image_irt_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_irt(:).*w(:),1,nro,npe)) / pi;
 image_gn_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_gn(:).*w(:),1,nro,npe)) / pi;
 image_bart_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_bart(:).*w(:),1,nro,npe)) / pi;
 image_tron_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_tron(:).*w(:),1,nro,npe)) / pi;
 
-!./tron -a -v sl_data_irt.ra  sl_irt_tron.ra
-!./tron -a -v sl_data_gn_ra   sl_gn_tron.ra
-!./tron -a -v sl_data_bart.ra sl_bart_tron.ra
-!./tron -a -v sl_data_tron.ra sl_tron_tron.ra
+% !./tron -a -v sl_data_irt.ra  sl_irt_tron.ra
+% !./tron -a -v sl_data_gn_ra   sl_gn_tron.ra
+% !./tron -a -v sl_data_bart.ra sl_bart_tron.ra
+% !./tron -a -v sl_data_tron.ra sl_tron_tron.ra
 
 %%
 image_irt_tron = squeeze(raread('sl_irt_tron.ra'));
@@ -122,7 +122,33 @@ image_gn_tron = squeeze(raread('sl_gn_tron.ra'));
 image_bart_tron = squeeze(raread('sl_bart_tron.ra'));
 image_tron_tron = squeeze(raread('sl_tron_tron.ra'));
 
+figure(2);
+subplot(221); rimp(image_irt_irt); title('IRT-IRT');
+subplot(222); rimp(image_irt_gn); title('IRT-gpuNUFFT');
+subplot(223); rimp(image_bart_bart); title('IRT-BART');
+subplot(224); rimp(image_tron_tron); title('IRT-TRON');
+colormap('default')
 
+figure(3);
+subplot(221); rimp(image_gn_irt); title('gpuNUFFT-IRT');
+subplot(222); rimp(image_gn_gn); title('gpuNUFFT-gpuNUFFT');
+subplot(223); rimp(image_gn_bart); title('gpuNUFFT-BART');
+subplot(224); rimp(image_gn_tron); title('gpuNUFFT-TRON');
+colormap('default')
+
+figure(4);
+subplot(221); rimp(image_bart_irt); title('BART-IRT');
+subplot(222); rimp(image_bart_gn); title('BART-gpuNUFFT');
+subplot(223); rimp(image_bart_bart); title('BART-BART');
+subplot(224); rimp(image_bart_tron); title('BART-TRON');
+colormap('default')
+
+figure(5);
+subplot(221); rimp(image_tron_irt); title('TRON-IRT');
+subplot(222); rimp(image_tron_gn); title('TRON-gpuNUFFT');
+subplot(223); rimp(image_tron_bart); title('TRON-BART');
+subplot(224); rimp(image_tron_tron); title('TRON-TRON');
+colormap('default')
 
 %% Plot everything
 data_tron = double(raread('sl_data_tron.ra'));
