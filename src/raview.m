@@ -1,10 +1,12 @@
 % raview.m
 function raview(filename)
-d = raread(filename);
-r = real(squeeze(d));
-i = imag(squeeze(d));
-m = (abs(squeeze(d)));
-p = angle(squeeze(d))/pi;
+d = (squeeze(raread(filename)));
+n = size(d,3);
+d = d(:,:,round(n/3));
+r = real((d));
+i = imag((d));
+m = (abs((d)));
+p = angle((d))/pi;
 subplot(221);
 doplot(r, 'real');
 subplot(222);

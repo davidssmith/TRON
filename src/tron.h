@@ -46,8 +46,8 @@
 
 // CONFIGURATION PARAMETERS
 // TODO: softcode as many as possible
-#define NSTREAMS        1
-#define MULTI_GPU       0
+#define NSTREAMS        4
+#define MULTI_GPU       1
 #define NCHAN           6
 #define MAXCHAN         6
 static const int threads = 96;    // TWEAK: CUDA kernel parameters, optimize for your device
@@ -59,12 +59,12 @@ extern "C" {  // don't mangle name, so can call from other languages
 __global__ void
 gridradial2d (float2 *udata, const float2 * __restrict__ nudata, const int ngrid,
     const int nchan, const int nro, const int npe, const float kernwidth, const float grid_oversamp,
-const int skip_angles, const int flag_postcomp, const int flag_golden_angle);
+const int skip_angles, const int flag_golden_angle);
 
 /*  generate 2D radial data from an input 2D image */
 __global__ void degridradial2d (
     float2 *nudata, const float2 * __restrict__ udata, const int nimg,
-    const int nchan, const int nro, const int npe, const float kernwidth, const float gridos, 
+    const int nchan, const int nro, const int npe, const float kernwidth, const float gridos,
     const int skip_angles, const int flag_golden_angle);
 
 /*  Reconstruct images from 2D radial data.  This host routine calls the appropriate

@@ -53,11 +53,8 @@ static cudaStream_t stream[NSTREAMS];
 static int ndevices;
 
 // DEVICE ARRAYS AND SIZES
-static float2 *d_nudata[NSTREAMS], *d_udata[NSTREAMS], *d_coilimg[NSTREAMS], *d_img[NSTREAMS];
-static size_t d_nudatasize; // size in bytes of non-uniform data
-static size_t d_udatasize; // size in bytes of gridded data
-static size_t d_coilimgsize; // multi-coil image size
-static size_t d_imgsize; // coil-combined image size
+static float2 *d_u[NSTREAMS], *d_v[NSTREAMS];
+static size_t d_datasize; // size in bytes of non-uniform data
 static size_t h_outdatasize;
 
 // DEFAULT RECON CONFIGURATION
@@ -67,6 +64,7 @@ static float data_undersamp = 1.f;
 
 static int prof_slide = 0;         // # of profiles to slide through the data between reconstructed images
 static int skip_angles = 0;        // # of angles to skip at beginning of image stack
+static int peoffset = 0;
 
 static int nc;  //  # of receive channels;
 static int nt;  // # of repeated measurements of same trajectory
@@ -75,12 +73,11 @@ static int nx, ny, nz, nxos, nyos, nzos;  // Cartesian dimensions of uniform dat
 
 static struct {
     unsigned adjoint       : 1;
-    unsigned postcomp      : 1;
     unsigned deapodize     : 1;
     unsigned koosh         : 1;
     unsigned verbose       : 1;
-    unsigned golden_angle  : 3;   // padded to 8 bits
-} flags = {0, 0, 1, 0, 0, 0};
+    unsigned golden_angle  : 4;   // padded to 8 bits
+} flags = {0, 1, 0, 0, 0};
 
 // CONSTANTS
 static const float PHI = 1.9416089796736116f;
@@ -270,7 +267,7 @@ coilcombinewalsh (float2 *img, const float2 * __restrict__ coilimg,
 }
 
 #if 1
-__host__ __device__ float
+__device__ float
 besseli0 (const float x)
 {
     if (x == 0.f) return 1.f;
@@ -322,7 +319,7 @@ besseli0 (float x)
 
 
 
-__host__ __device__ inline float
+__device__ inline float
 kernel_shape (const float kernwidth, const float gridos)
 {
 //#define BEATTY_BETA
@@ -337,7 +334,7 @@ kernel_shape (const float kernwidth, const float gridos)
 }
 
 
-__host__ __device__ inline float
+__device__ inline float
 gridkernel (const float x, const float kernwidth, const float sigma)
 {
   // x in [-kernwidth,kernwidth]
@@ -353,7 +350,7 @@ gridkernel (const float x, const float kernwidth, const float sigma)
       return 0.0f;
 }
 
-__host__ __device__ inline float
+__device__ inline float
 gridkernelhat (const float u, const float kernwidth, const float sigma)
 {
     // u in [-n/2,n/2]
@@ -438,6 +435,7 @@ crop (float2* dst, const int nxdst, const int nydst, const float2* __restrict__ 
     }
 }
 
+
 extern "C" {  // don't mangle name, so can call from other languages
 
 /*
@@ -446,10 +444,9 @@ extern "C" {  // don't mangle name, so can call from other languages
 __global__ void
 gridradial2d (float2 *udata, const float2 * __restrict__ nudata, const int nxos,
     const int nchan, const int nro, const int npe, const float kernwidth, const float gridos,
-const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
+const int skip_angles, const int flag_golden_angle)
 {
     // udata: [NCHAN x NGRID x NGRID], nudata: NCHAN x NRO x NPE
-    //float gridos = float(nxos) / float(nro); // gridosling factor
     float2 utmp[MAXCHAN];
     //const int blocksx = 8; // TODO: optimize this blocking
     //const int blocksy = 4;
@@ -483,23 +480,20 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
         int Rmin = fmaxf(ceilf(R - kernwidth), 0);
 
         // zero the temporary work array
-        for (int ch = 0; ch < nchan; ++ch)
-             udata[nchan*id + ch] = make_float2(0.f, 0.f);
-
-        if (Rmin > nxos/2-1) continue; // skip gridding if outside non-uniform data area
-
-        float sdc = 0.f;
+        // for (int ch = 0; ch < nchan; ++ch)
+        //      udata[nchan*id + ch] = make_float2(0.f, 0.f);
+        //if (Rmin > nxos/2-1) continue; // skip gridding if outside non-uniform data area
 
         // get uniform point coordinate in non-uniform system, (r,theta) in this case
         float T = modang(atan2f(float(Y),float(X)));
         float dT = atan2f(kernwidth, R); // narrow that band to an arc
-        // profiles must line within an arc of 2*dT to be counted
+        // profiles must lie within an arc of 2*dT to be counted
 
         // TODO: replace this logic with boolean function that can be swapped out
         // for diff acquisitions
         for (int pe = 0; pe < npe; ++pe)
         {
-            float t = flag_golden_angle ? modang(PHI * float(pe + skip_angles)) : pe*M_PI / float(npe); // + M_PI/2;
+            float t = flag_golden_angle ? modang(PHI * float(pe + skip_angles)) : pe*M_PI / float(npe);
             float dt1 = minangulardist(t, T);
             if (dt1 <= dT)
             {
@@ -508,31 +502,24 @@ const int skip_angles, const int flag_postcomp, const int flag_golden_angle)
                 // TODO: fix this logic, try using without dt1
                 int rstart = fabs(t-T) < 0.5f*M_PI ? Rmin : -Rmax;
                 int rend   = fabs(t-T) < 0.5f*M_PI ? Rmax : -Rmin;
-                // TODO: add periodic BCs
                 for (int r = rstart; r <= rend; ++r)  // for each POSITIVE non-uniform ro point
                 {
                     float kx = r*cf; // [-nxos/2 ... nxos/2-1]    // TODO: compute distance in radial coordinates?
                     float ky = r*sf; // [-nyos/2 ... nyos/2-1]
-                    float wgt = gridkernel(kx-X, kernwidth, gridos)*gridkernel(ky-Y, kernwidth, gridos) / npe / sqrtf(gridos);
-                    if (flag_postcomp)
-                        sdc += wgt;
+                    float dx = sqrtf((kx-X)*(kx-X) + (ky-Y)*(ky-Y));
+                    float wgt = gridkernel(dx, kernwidth, gridos);
+                    //float wgt = gridkernel(kx-X, kernwidth, gridos) * gridkernel(ky-Y, kernwidth, gridos);
                     int ridx = (r * nro) / nxos;
                     for (int ch = 0; ch < nchan && wgt > 0.f; ch++) {
-                        //utmp[ch] += wgt*nudata[nchan*(nro*pe + ridx + nro/2) + ch];
-                        utmp[ch].x = __fmaf_rn(wgt,nudata[nchan*(nro*pe + ridx + nro/2) + ch].x, utmp[ch].x);
-                        utmp[ch].y = __fmaf_rn(wgt,nudata[nchan*(nro*pe + ridx + nro/2) + ch].y, utmp[ch].y);
+                        utmp[ch] += wgt*nudata[nchan*(nro*pe + ridx + nro/2) + ch];
+                        //utmp[ch].x = __fmaf_rn(wgt, nudata[nchan*(nro*pe + ridx + nro/2) + ch].x, utmp[ch].x);
+                        //utmp[ch].y = __fmaf_rn(wgt, nudata[nchan*(nro*pe + ridx + nro/2) + ch].y, utmp[ch].y);
                     }
                 }
             }
         }
-
-        // TODO: change postcomp to a compile-time option? or delete?
-        if (flag_postcomp && sdc > 0.f)
-            for (int ch = 0; ch < nchan; ++ch)
-                udata[nchan*id + ch] = utmp[ch] / sdc;
-        else
-            for (int ch = 0; ch < nchan; ++ch)
-                udata[nchan*id + ch] = utmp[ch];
+        for (int ch = 0; ch < nchan; ++ch)
+            udata[nchan*id + ch] = utmp[ch] / npe / sqrtf(gridos);
     }
 }
 
@@ -561,15 +548,12 @@ degridradial2d (
         float Y = n*R*cosf(T) + (n + 1)/2; // [0, n)
         for (int xu = ceilf(X-W); xu <= (X+W); ++xu)
          {
-            float wgtx = gridkernel(xu-X, W, gridos) / n;
+            //float wgtx = gridkernel(xu-X, W, gridos) / n;
             for (int yu = ceilf(Y-W); yu <= (Y+W); ++yu)
             {   // loop through contributing Cartesian points
-                // TODO: optimize this
-                //float dx = sqrtf((xu-X)*(xu-X) + (yu-Y)*(yu-Y));
-                //if (dx > W)
-                //    continue;
-                //float wgt = gridkernel(dx, W, gridos);
-                float wgt = wgtx * gridkernel(yu-Y, W, gridos);
+                float dx = sqrtf((xu-X)*(xu-X) + (yu-Y)*(yu-Y));
+                float wgt = gridkernel(dx, W, gridos) / n;
+                //float wgt = wgtx * gridkernel(yu-Y, W, gridos);
                 int i = (xu + n) % n; // periodic domain
                 int j = (yu + n) % n;
                 int offset = nrep*(i*n + j);
@@ -585,105 +569,91 @@ degridradial2d (
     }
 }
 
-#if 0
-__global__ void
-degridradial2d_old (
-    /* udata: [NCHAN x NGRID x NGRID], nudata: NCHAN x NRO x NPE */
-    float2 *nudata, const float2 * __restrict__ udata, const int n, const int nrep,
-    const int nro, const int npe, const float W, const float gridos, const int skip_angles,
-    const int flag_golden_angle)
-{
-    for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < nro*npe; id += blockDim.x * gridDim.x)
-    {
-        for (int c = 0; c < nrep; ++c) // zero my assigned unequal point
-            nudata[nrep*id + c] = make_float2(0.f, 0.f);
-        int pe = id / nro; // my row and column in the non-uniform data
-        int ro = id % nro;
-        // thread's polar coordinates
-        // TODO: is this R correct?
-        float R = float(ro)/float(nro) - 0.5f; // [-1/2,1/2)
-        float T = flag_golden_angle ? modang(PHI*(pe + skip_angles)) : float(pe)*M_PI/float(npe) + M_PI/2;
-
-        // thread's Cartesian coordinates
-        float X = n*R*sinf(T) + (n + 1)/2; // TODO: use _sincosf?
-        float Y = n*R*cosf(T) + (n + 1)/2; // [0, n)
-        for (int xu = ceilf(X-W); xu <= (X+W); ++xu)
-         {
-            float wgtx = gridkernel(xu-X, W, gridos) / n;
-            for (int yu = ceilf(Y-W); yu <= (Y+W); ++yu)
-            {   // loop through contributing Cartesian points
-                // TODO: optimize this
-                //float dx = sqrtf((xu-X)*(xu-X) + (yu-Y)*(yu-Y));
-                //if (dx > W)
-                //    continue;
-                //float wgt = gridkernel(dx, W, gridos);
-                float wgt = wgtx * gridkernel(yu-Y, W, gridos);
-                int i = (xu + n) % n; // periodic domain
-                int j = (yu + n) % n;
-                int offset = nrep*(i*n + j);
-                for (int c = 0; c < nrep; ++c) {
-                    nudata[nrep*id + c] += wgt*udata[offset + c];
-                }
-            }
-
-        }
-    }
-}
-
-#endif
-
 void
 tron_init ()
 {
+    if (MULTI_GPU) {
+        cuTry(cudaGetDeviceCount(&ndevices));
+    } else
+        ndevices = 1;
+    DPRINT("MULTI_GPU = %d\n", MULTI_GPU);
+    DPRINT("NSTREAMS = %d\n", NSTREAMS);
+    DPRINT("Using %d CUDA devices\n", ndevices);
+    DPRINT("Kernels configured with %d blocks of %d threads\n", threads, blocks);
 
-  if (MULTI_GPU) {
-    cuTry(cudaGetDeviceCount(&ndevices));
-  } else
-    ndevices = 1;
-  DPRINT("MULTI_GPU = %d\n", MULTI_GPU);
-  DPRINT("NSTREAMS = %d\n", NSTREAMS);
-  DPRINT("Using %d CUDA devices\n", ndevices);
-  DPRINT("Kernels configured with %d blocks of %d threads\n", threads, blocks);
+    d_datasize = nc*nt*max(nro*npe1work, nxos*nyos)*sizeof(float2);  // input data
 
-  // array sizes
-  // TODO: this is wrong.  d_indatasize should just be the size of the work slice
-  d_nudatasize = nc*nt*nro*npe1work*sizeof(float2);  // input data
-  d_udatasize = nc*nt*nxos*nyos*sizeof(float2); // multi-coil gridded data
-  d_coilimgsize = nc*nt*nx*ny*sizeof(float2);
-  d_imgsize = nt*nx*ny*sizeof(float2);
-
-  for (int j = 0; j < NSTREAMS; ++j) // allocate data and initialize apodization and kernel texture
-  {
-      DPRINT("init STREAM %d\n", j);
-      if (MULTI_GPU) cudaSetDevice(j % ndevices);
-      cuTry(cudaStreamCreate(&stream[j]));
-
-      fft_init(&fft_plan[j], nx, ny, nc);
-      cufftSafeCall(cufftSetStream(fft_plan[j], stream[j]));
-
-      fft_init(&fft_plan_os[j], nxos, nyos, nc);
-      cufftSafeCall(cufftSetStream(fft_plan_os[j], stream[j]));
-      cuTry(cudaMalloc((void **)&d_udata[j], d_udatasize));
-      cuTry(cudaMalloc((void **)&d_nudata[j],  d_nudatasize));
-      cuTry(cudaMalloc((void **)&d_coilimg[j], d_coilimgsize));
-      cuTry(cudaMalloc((void **)&d_img[j], d_imgsize));
-
-  }
+    for (int j = 0; j < NSTREAMS; ++j) // allocate data and initialize apodization and kernel texture
+    {
+        DPRINT("init STREAM %d\n", j);
+        if (MULTI_GPU)
+            cudaSetDevice(j % ndevices);
+        cuTry(cudaStreamCreate(&stream[j]));
+        fft_init(&fft_plan[j], nx, ny, nc);
+        cufftSafeCall(cufftSetStream(fft_plan[j], stream[j]));
+        fft_init(&fft_plan_os[j], nxos, nyos, nc);
+        cufftSafeCall(cufftSetStream(fft_plan_os[j], stream[j]));
+        cuTry(cudaMalloc((void **)&d_u[j], d_datasize));
+        cuTry(cudaMalloc((void **)&d_v[j], d_datasize));
+    }
 }
 
 void
 tron_shutdown()
 {
-    DPRINT("freeing device memory\n");
+    DPRINT("freeing device memory ... ");
     for (int j = 0; j < NSTREAMS; ++j) { // free allocated memory
-        if (MULTI_GPU) cudaSetDevice(j % ndevices);
-        cuTry(cudaFree(d_udata[j]));
-        cuTry(cudaFree(d_nudata[j]));
-        cuTry(cudaFree(d_coilimg[j]));
-        cuTry(cudaFree(d_img[j]));
+        if (MULTI_GPU)
+            cudaSetDevice(j % ndevices);
+        cuTry(cudaFree(d_u[j]));
+        cuTry(cudaFree(d_v[j]));
         cudaStreamDestroy(stream[j]);
     }
-    DPRINT("done freeing\n");
+    DPRINT("done.\n");
+}
+
+
+void
+tron_nufft_adj_radial2d (float2 *d_out, float2 *d_in, const int j)
+{
+    // NUFFT adjoint begin
+    precompensate<<<threads,blocks,0,stream[j]>>>(d_in, nc*nt, nro, npe1work);
+    gridradial2d<<<threads,blocks,0,stream[j]>>>(d_out, d_in, nxos, nc*nt, nro, npe1work, kernwidth,
+        gridos, skip_angles+peoffset, flags.golden_angle);
+    fftshift<<<threads,blocks,0,stream[j]>>>(d_in, d_out, nxos, nt*nc, FFT_SHIFT_INVERSE);
+    cufftSafeCall(cufftExecC2C(fft_plan_os[j], d_in, d_out, CUFFT_INVERSE));
+    fftshift<<<threads,blocks,0,stream[j]>>>(d_in, d_out, nxos, nc*nt, FFT_SHIFT_FORWARD);
+    crop<<<threads,blocks,0,stream[j]>>>(d_out, nx, ny, d_in, nxos, nyos, nc*nt);
+    deapodkernel<<<threads,blocks,0,stream[j]>>>(d_out, nx, nc*nt, kernwidth, gridos);
+}
+
+void
+tron_nufft_radial2d (float2 *d_out, float2 *d_in, const int j)
+{
+    deapodkernel<<<threads,blocks,0,stream[j]>>>(d_in, nx, nc*nt, kernwidth, gridos);
+    fftshift<<<threads,blocks,0,stream[j]>>>(d_out, d_in, nx, nc*nt, FFT_SHIFT_FORWARD);
+    cufftSafeCall(cufftExecC2C(fft_plan[j], d_out, d_out, CUFFT_FORWARD));
+    fftshift<<<threads,blocks,0,stream[j]>>>(d_in, d_out, nx, nc*nt, FFT_SHIFT_INVERSE);
+    degridradial2d<<<threads,blocks,0,stream[j]>>>(d_out, d_in, nx, nc*nt,
+         nro, npe1work, kernwidth, gridos, skip_angles, flags.golden_angle);
+}
+
+void
+tron_cgnr_radial2d (const int j, const int niter)
+{
+    float2 *d_z;
+    float alpha, beta;
+    cuTry(cudaMalloc((void **)&d_z, d_datasize));
+    // p = A^H W r
+    tron_nufft_adj_radial2d(d_v[j], d_u[j], j);  // result in d_v
+    // z = p
+    cuTry(cudaMemcpyAsync(d_z, d_v[j], nx*nx*nc*nt*sizeof(float2), cudaMemcpyDeviceToDevice, stream[j]));
+    for (int t = 0; t < niter; ++t) {
+
+
+    }
+
+    cudaFree(d_z);
 }
 
 
@@ -691,63 +661,60 @@ tron_shutdown()
     CUDA kernels in the correct order depending on the direction of recon.   */
 
 __host__ void
-recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
+recon_radial2d (float2 *h_outdata, const float2 *__restrict__ h_indata)
 {
     DPRINT("recon_radial2d\n");
-
     tron_init();
 
     for (int z = 0; z < nz; ++z)
     {
-        int j = z % NSTREAMS; // j is stream index
+        int j = z % NSTREAMS; // j is the stream index
         if (MULTI_GPU) cudaSetDevice(j % ndevices);
 
-        int peoffset = z*prof_slide;
-
-        // address offsets into the data arrays
-        size_t data_offset = nc*nt*nro*peoffset;
+        peoffset = z*prof_slide;
+        size_t data_offset = nc*nt*nro*peoffset;  // address offsets into the data arrays
         size_t img_offset = nt*nx*ny*z;
 
-        printf("[dev %d, stream %d] reconstructing slice %d/%d from PEs %d-%d (offset %ld)\n",
-            j%ndevices, j, z+1, nz, z*prof_slide, (z+1)*prof_slide-1, data_offset);
+        printf("[dev %d, stream %d] reconstructing slice %d/%d from PEs %d-%d\n",
+            j%ndevices, j, z+1, nz, z*prof_slide, (z+1)*prof_slide-1);
 
-        if (flags.adjoint)
+        if (flags.adjoint) { // copy working data to GPU
+            cuTry(cudaMemcpyAsync(d_u[j], h_indata + data_offset,
+                nc*nt*nro*npe1work*sizeof(float2), cudaMemcpyHostToDevice, stream[j]));
+        } else {
+            cuTry(cudaMemcpyAsync(d_u[j], h_indata + data_offset,
+                nc*nt*nx*ny*sizeof(float2), cudaMemcpyHostToDevice, stream[j]));
+        }
+        int niter = 1;
+
+        for (int t = 0; t < niter; ++t)
         {
-            cuTry(cudaMemcpyAsync(d_nudata[j], h_indata + data_offset, d_nudatasize, cudaMemcpyHostToDevice, stream[j]));
-            // reverse from non-uniform data to image
-            if (!flags.postcomp)
-                precompensate<<<threads,blocks,0,stream[j]>>>(d_nudata[j], nc*nt, nro, npe1work);
-            gridradial2d<<<threads,blocks,0,stream[j]>>>(d_udata[j], d_nudata[j], nxos, nc*nt, nro, npe1work, kernwidth,
-                gridos, skip_angles+peoffset, flags.postcomp, flags.golden_angle);
-            fftshift<<<threads,blocks,0,stream[j]>>>(d_nudata[j], d_udata[j], nxos, nt*nc, FFT_SHIFT_INVERSE);
-            cufftSafeCall(cufftExecC2C(fft_plan_os[j], d_nudata[j], d_udata[j], CUFFT_INVERSE));
-            fftshift<<<threads,blocks,0,stream[j]>>>(d_nudata[j], d_udata[j], nxos, nc*nt, FFT_SHIFT_FORWARD);
-            crop<<<threads,blocks,0,stream[j]>>>(d_coilimg[j], nx, ny, d_nudata[j], nxos, nyos, nc*nt);
+            if (flags.adjoint)  // process data resident on GPU
+                tron_nufft_adj_radial2d(d_v[j], d_u[j], j);
+            else
+                tron_nufft_radial2d(d_v[j], d_u[j], j);
+
+        }
+
+        if (flags.adjoint)  // send result back to CPU
+        {
+            coilcombinesos<<<threads,blocks,0,stream[j]>>>(d_u[j], d_v[j], nx, nc); // TODO: should this have nt in it?
             // TODO: look at nc to decide whether to coil combine and by how much (can compress)
             //coilcombinewalsh<<<threads,blocks,0,stream[j]>>>(d_img[j],d_coilimg[j], nx, nc, nt, 1); /* 0 works, 1 good, 3 better */
-            coilcombinesos<<<threads,blocks,0,stream[j]>>>(d_img[j], d_coilimg[j], nx, nc);
-            deapodkernel<<<threads,blocks,0,stream[j]>>>(d_img[j], nx, 1*nt, kernwidth, gridos);
 #ifdef CUDA_HOST_MALLOC
-            cuTry(cudaMemcpyAsync(h_outdata + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost, stream[j]));
+            cuTry(cudaMemcpyAsync(h_outdata + img_offset, d_u[j],
+                nx*ny*nt*sizeof(float2), cudaMemcpyDeviceToHost, stream[j]));
 #else
-            cuTry(cudaMemcpy(h_outdata + img_offset, d_img[j], d_imgsize, cudaMemcpyDeviceToHost));
+            cuTry(cudaMemcpy(h_outdata + img_offset, d_v[j],
+                nx*ny*nt*sizeof(float2), cudaMemcpyDeviceToHost));
 #endif
-        }
-        else
-        {   // forward from image to non-uniform data
-            cuTry(cudaMemcpyAsync(d_img[j], h_indata + data_offset, d_imgsize, cudaMemcpyHostToDevice, stream[j]));
-            deapodkernel<<<threads,blocks,0,stream[j]>>>(d_img[j], nx, nc*nt, kernwidth, gridos);
-            fftshift<<<threads,blocks,0,stream[j]>>>(d_udata[j], d_img[j], nx, nc*nt, FFT_SHIFT_FORWARD);
-            cufftSafeCall(cufftExecC2C(fft_plan[j], d_udata[j], d_img[j], CUFFT_FORWARD));
-            fftshift<<<threads,blocks,0,stream[j]>>>(d_udata[j], d_img[j], nx, nc*nt, FFT_SHIFT_INVERSE);
-            degridradial2d<<<threads,blocks,0,stream[j]>>>(d_nudata[j], d_udata[j], nx, nc*nt,
-                 nro, npe1work, kernwidth, gridos, skip_angles, flags.golden_angle);
+        } else {
 #ifdef CUDA_HOST_MALLOC
-            cuTry(cudaMemcpyAsync(h_outdata + nc*nt*nro*npe1work*z, d_nudata[j], d_nudatasize, cudaMemcpyDeviceToHost, stream[j]));
-            //cuTry(cudaMemcpyAsync(h_outdata, d_udata[j], d_udatasize, cudaMemcpyDeviceToHost, stream[j]));
+            cuTry(cudaMemcpyAsync(h_outdata + nc*nt*nro*npe1work*z, d_u[j],
+                nc*nt*nro*npe1work*sizeof(float2), cudaMemcpyDeviceToHost, stream[j]));
 #else
-            //cuTry(cudaMemcpyAsync(h_outdata + nc*nt*nro*npe1work*z, d_nudata[j], d_nudatasize, cudaMemcpyDeviceToHost));
-            cuTry(cudaMemcpyAsync(h_outdata /*+ nc*nt*nx*nx*z */, d_udata[j], d_udatasize, cudaMemcpyDeviceToHost));
+            cuTry(cudaMemcpyAsync(h_outdata + nc*nt*nro*npe1work*z, d_u[j],
+                nc*nt*nro*npe1work*sizeof(float2), cudaMemcpyDeviceToHost));
 #endif
         }
     }
@@ -763,6 +730,7 @@ recon_radial2d(float2 *h_outdata, const float2 *__restrict__ h_indata)
 void
 print_usage()
 {
+    fprintf(stderr, "Trajectory-optimized Non-uniform Fast Fourier Transform\n");
     fprintf(stderr, "Usage: tron [-3ahuv] [-r cmds] [-d prof_slide] [-k width] [-o gridos] [-s skip_angles] [-u data_undersamp] <infile.ra> [outfile.ra]\n");
     fprintf(stderr, "\t-3\t\t\t3D koosh ball trajectory\n");
     fprintf(stderr, "\t-a\t\t\tadjoint operation\n");
@@ -898,7 +866,6 @@ main (int argc, char *argv[])
     }
     else
     {
-        // TODO: this is broken probably
         nc = ra_in.dims[0];
         nt = ra_in.dims[1];
         nx = ra_in.dims[2];
@@ -907,11 +874,11 @@ main (int argc, char *argv[])
         nxos = nx*gridos;
         nyos = ny*gridos;
         nro = gridos*nx;  // TODO: implement non-square images
-        npe1work = data_undersamp * nro;  // TODO: fix this hack
-        npe1 = npe1work;   // TODO: make this more customizable
+        npe1work = data_undersamp * nro;
+        npe1 = npe1work;
         if (flags.koosh) {
             npe2 = nz;
-            nzos = nz; //gridos*nz;
+            nzos = nz; //gridos*nz ?;
         } else {
             npe2 = 1;
             nzos = 1;
@@ -953,7 +920,6 @@ main (int argc, char *argv[])
     DPRINT("Running reconstruction ...\n ");
     clock_t start = clock();
 
-    // TODO: put more setup inside recon routine. main() should just load data and call recon
     recon_radial2d(h_outdata, h_indata);
 
     clock_t end = clock();
