@@ -1,8 +1,8 @@
 % raview.m
 function raview(filename)
 d = (squeeze(raread(filename)));
-n = size(d,3);
-d = d(:,:,round(n/3));
+%n = size(d,3);
+% d = d(:,:,round(n/3));
 r = real((d));
 i = imag((d));
 m = (abs((d)));

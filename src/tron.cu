@@ -36,11 +36,13 @@
 #include <stdint.h>
 #include <cufft.h>
 #include <cuda_runtime.h>
+#include "cublas_v2.h"
 
 #include "float2math.h"
 #include "mri.h"
 #include "ra.h"
 #include "tron.h"
+#include "norm.h"
 
 #define MAX(a,b) ((a)>(b)?(a):(b))
 #define MIN(a,b) ((a)<(b)?(a):(b))
@@ -93,7 +95,7 @@ gpuAssert (cudaError_t code, const char *file, int line, bool abort=true)
 #define cuTry(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 
 static const char *
-_cudaGetErrorEnum(cufftResult error)
+_cufftGetErrorEnum(cufftResult error)
 {
     switch (error) {
         case CUFFT_SUCCESS: return "CUFFT_SUCCESS";
@@ -110,13 +112,41 @@ _cudaGetErrorEnum(cufftResult error)
     }
 }
 
+static const char *
+_cublasGetErrorEnum (cublasStatus_t error)
+{
+    switch (error) {
+        case CUBLAS_STATUS_SUCCESS: return "Success";
+        case CUBLAS_STATUS_NOT_INITIALIZED: return "Not Initiaziled";
+        case CUBLAS_STATUS_ALLOC_FAILED: return "Alloc Failed";
+        case CUBLAS_STATUS_INVALID_VALUE: return "Invalid Value";
+        case CUBLAS_STATUS_ARCH_MISMATCH: return "Arch Mismatch";
+        case CUBLAS_STATUS_MAPPING_ERROR: return "Mapping Error";
+        case CUBLAS_STATUS_EXECUTION_FAILED: return "Exec Failed";
+        case CUBLAS_STATUS_INTERNAL_ERROR: return "Internal Error";
+        case CUBLAS_STATUS_NOT_SUPPORTED: return "Not Supported";
+        case CUBLAS_STATUS_LICENSE_ERROR: return "License Error";
+        default: return "<unknown>";
+    }
+}
+
 #define cufftSafeCall(err)  __cufftSafeCall(err, __FILE__, __LINE__)
 inline void __cufftSafeCall (cufftResult err, const char *file, const int line)
 {
     if (CUFFT_SUCCESS != err) {
         fprintf(stderr, "CUFFT error in file '%s', line %d\nerror %s: %d\nterminating!\n",__FILE__, __LINE__, \
-                _cudaGetErrorEnum(err), (int)err);
+                _cufftGetErrorEnum(err), (int)err);
         cudaDeviceReset();
+        exit(1);
+    }
+}
+
+#define cublasSafeCall(err)  __cublasSafeCall(err, __FILE__, __LINE__)
+inline void __cublasSafeCall (cublasStatus_t err, const char *file, const int line)
+{
+    if (CUBLAS_STATUS_SUCCESS != err) {
+        fprintf(stderr, "CUBLAS error in file '%s', line %d\nerror %s: %d\nterminating!\n",__FILE__, __LINE__, \
+                _cublasGetErrorEnum(err), (int)err);
         exit(1);
     }
 }
@@ -639,23 +669,72 @@ tron_nufft_radial2d (float2 *d_out, float2 *d_in, const int j)
 }
 
 void
-tron_cgnr_radial2d (const int j, const int niter)
+copy (float2* d_dst, float2* d_src, const size_t N, const int j)
 {
-    float2 *d_z;
-    float alpha, beta;
-    cuTry(cudaMalloc((void **)&d_z, d_datasize));
-    // p = A^H W r
-    tron_nufft_adj_radial2d(d_v[j], d_u[j], j);  // result in d_v
-    // z = p
-    cuTry(cudaMemcpyAsync(d_z, d_v[j], nx*nx*nc*nt*sizeof(float2), cudaMemcpyDeviceToDevice, stream[j]));
-    for (int t = 0; t < niter; ++t) {
-
-
-    }
-
-    cudaFree(d_z);
+  cuTry(cudaMemcpyAsync(d_dst, d_src, N*sizeof(float2), cudaMemcpyDeviceToDevice, stream[j]));
 }
 
+
+__global__ void
+Caxpy (float2 *d_z, float2 *d_y, float2 *d_x, float alpha, const size_t N)
+{
+    for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < N; id += blockDim.x * gridDim.x)
+        d_z[id] = d_y[id] +  alpha*d_x[id];
+}
+
+void
+tron_cgnr_radial2d (float2* d_out, float2 *d_in, const int j, const int niter)
+{
+    // Based on Algorithm 1 from Knopp et al. 2007, Intl J of Biomed Imag
+    // TODO: split into one pointer per stream?
+    float2 *d_ztilde, *d_p, *d_ptilde, *d_r;
+    float alpha, beta;
+    // cublasHandle_t handle;
+    // cublasStatus_t stat;
+    // stat = cublasCreate(&handle);
+
+
+    const size_t N = nx*ny*nc*nt;
+    cuTry(cudaMalloc((void **)&d_ztilde, d_datasize));
+    cuTry(cudaMalloc((void **)&d_p, d_datasize));
+    cuTry(cudaMemset((float*)d_p, 0.f, N*2));
+    cuTry(cudaMalloc((void **)&d_ptilde, d_datasize));
+    cuTry(cudaMalloc((void **)&d_r, d_datasize));
+    tron_nufft_adj_radial2d(d_ztilde, d_u[j], j); // ztilde = A^H W r
+    copy(d_ptilde, d_ztilde, N, j); // ptilde = ztilde
+    for (int t = 0; t < niter; ++t)
+    {
+        copy(d_u[j], d_ptilde, N, j);
+        tron_nufft_radial2d(d_v[j], d_u[j], j); // v = A*ptilde
+        copy(d_u[j], d_v[j], N, j);
+        precompensate<<<threads,blocks,0,stream[j]>>>(d_u[j], nc*nt, nro, npe1work); // W*v
+        alpha = norm(d_ztilde, N) / dot(d_v[j], d_u[j], N);
+
+        Caxpy<<<threads,blocks,0,stream[j]>>>(d_p, d_p, d_ptilde, alpha, N);
+        Caxpy<<<threads,blocks,0,stream[j]>>>(d_r, d_r, d_v[j],  -alpha, N);
+
+        beta = 1.f / norm(d_ztilde, N);
+        copy(d_u[j], d_r, N, j); // ptilde = ztilde
+        tron_nufft_adj_radial2d(d_ztilde, d_u[j], j); // ztilde = A^H W r
+        beta *= norm(d_ztilde, N);
+        Caxpy<<<threads,blocks,0,stream[j]>>>(d_ptilde, d_ztilde, d_ptilde, beta, N);
+    }
+
+    copy(d_out, d_p, N, j);
+
+    cudaFree(d_p);
+    cudaFree(d_ptilde);
+    cudaFree(d_r);
+    cudaFree(d_ztilde);
+    cublasDestroy(handle);
+}
+
+
+// void tron_set_grid_oversampling (const float g) { gridos = g; }
+// void tron_set_data_undersampling (const float u) { data_undersamp = u; }
+// void tron_set_golden_angle () { flags.golden_angle = 1; }
+// void tron_set_profile_slide (const int s ) { prof_slide = s; }
+// void tron_set_skip_angles (const int s) { skip_angles = s; }
 
 /*  Reconstruct images from 2D radial data.  This host routine calls the appropriate
     CUDA kernels in the correct order depending on the direction of recon.   */
@@ -685,16 +764,13 @@ recon_radial2d (float2 *h_outdata, const float2 *__restrict__ h_indata)
             cuTry(cudaMemcpyAsync(d_u[j], h_indata + data_offset,
                 nc*nt*nx*ny*sizeof(float2), cudaMemcpyHostToDevice, stream[j]));
         }
-        int niter = 1;
+        int niter = 10;
+        if (flags.adjoint) {  // process data resident on GPU
+            //tron_nufft_adj_radial2d(d_v[j], d_u[j], j);
+            tron_cgnr_radial2d (d_v[j], d_u[j], j, niter);
+        } else
+            tron_nufft_radial2d(d_v[j], d_u[j], j);
 
-        for (int t = 0; t < niter; ++t)
-        {
-            if (flags.adjoint)  // process data resident on GPU
-                tron_nufft_adj_radial2d(d_v[j], d_u[j], j);
-            else
-                tron_nufft_radial2d(d_v[j], d_u[j], j);
-
-        }
 
         if (flags.adjoint)  // send result back to CPU
         {
@@ -705,15 +781,15 @@ recon_radial2d (float2 *h_outdata, const float2 *__restrict__ h_indata)
             cuTry(cudaMemcpyAsync(h_outdata + img_offset, d_u[j],
                 nx*ny*nt*sizeof(float2), cudaMemcpyDeviceToHost, stream[j]));
 #else
-            cuTry(cudaMemcpy(h_outdata + img_offset, d_v[j],
+            cuTry(cudaMemcpy(h_outdata + img_offset, d_u[j],
                 nx*ny*nt*sizeof(float2), cudaMemcpyDeviceToHost));
 #endif
         } else {
 #ifdef CUDA_HOST_MALLOC
-            cuTry(cudaMemcpyAsync(h_outdata + nc*nt*nro*npe1work*z, d_u[j],
+            cuTry(cudaMemcpyAsync(h_outdata + nc*nt*nro*npe1work*z, d_v[j],
                 nc*nt*nro*npe1work*sizeof(float2), cudaMemcpyDeviceToHost, stream[j]));
 #else
-            cuTry(cudaMemcpyAsync(h_outdata + nc*nt*nro*npe1work*z, d_u[j],
+            cuTry(cudaMemcpyAsync(h_outdata + nc*nt*nro*npe1work*z, d_v[j],
                 nc*nt*nro*npe1work*sizeof(float2), cudaMemcpyDeviceToHost));
 #endif
         }
