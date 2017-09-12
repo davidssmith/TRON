@@ -430,7 +430,9 @@ deapodkernel (float2  *d_a, const int n, const int nrep, const float m, const fl
         float x = id / float(n) - 0.5f*n;  // TODO: simplify this
         float y = float(id % n) - 0.5f*n;
         float scale = 1.f / (n * sigma);
-        float wgt = gridkernelhat(x*scale, m, sigma) * gridkernelhat(y*scale, m, sigma);
+        float r = sqrtf(x*x + y*y);
+        //float wgt = gridkernelhat(x*scale, m, sigma) * gridkernelhat(y*scale, m, sigma);
+        float wgt = gridkernelhat(r*scale, m, sigma);
         for (int c = 0; c < nrep; ++c)
             d_a[nrep*id + c] /= (wgt > 0.f ? wgt : 1.f);
     }
@@ -549,7 +551,7 @@ const int skip_angles, const int flag_golden_angle)
             }
         }
         for (int ch = 0; ch < nchan; ++ch)
-            udata[nchan*id + ch] = utmp[ch] / npe / sqrtf(gridos);
+            udata[nchan*id + ch] = utmp[ch] / nxos / sqrtf(gridos);
     }
 }
 
@@ -582,7 +584,7 @@ degridradial2d (
             for (int yu = ceilf(Y-W); yu <= (Y+W); ++yu)
             {   // loop through contributing Cartesian points
                 float dx = sqrtf((xu-X)*(xu-X) + (yu-Y)*(yu-Y));
-                float wgt = gridkernel(dx, W, gridos) / n;
+                float wgt = gridkernel(dx, W, gridos) / sqrtf(npe*nro);
                 //float wgt = wgtx * gridkernel(yu-Y, W, gridos);
                 int i = (xu + n) % n; // periodic domain
                 int j = (yu + n) % n;
@@ -688,35 +690,45 @@ tron_cgnr_radial2d (float2* d_out, float2 *d_in, const int j, const int niter)
     // Based on Algorithm 1 from Knopp et al. 2007, Intl J of Biomed Imag
     // TODO: split into one pointer per stream?
     float2 *d_ztilde, *d_p, *d_ptilde, *d_r;
-    float alpha, beta;
-    // cublasHandle_t handle;
-    // cublasStatus_t stat;
-    // stat = cublasCreate(&handle);
+    float alpha, beta, res1, res2;
+    float2 zres;
+    const int inc = 1;
+    cublasHandle_t handle;
+    cublasStatus_t stat;
+    stat = cublasCreate(&handle);
 
 
     const size_t N = nx*ny*nc*nt;
+    const size_t n = nro*npe1*nc*nt;
+    dprint(N,d);
+    dprint(n,d);
     cuTry(cudaMalloc((void **)&d_ztilde, d_datasize));
     cuTry(cudaMalloc((void **)&d_p, d_datasize));
     cuTry(cudaMemset((float*)d_p, 0.f, N*2));
     cuTry(cudaMalloc((void **)&d_ptilde, d_datasize));
     cuTry(cudaMalloc((void **)&d_r, d_datasize));
-    tron_nufft_adj_radial2d(d_ztilde, d_u[j], j); // ztilde = A^H W r
+    tron_nufft_adj_radial2d(d_ztilde, d_in, j); // ztilde = A^H W r
     copy(d_ptilde, d_ztilde, N, j); // ptilde = ztilde
     for (int t = 0; t < niter; ++t)
     {
         copy(d_u[j], d_ptilde, N, j);
         tron_nufft_radial2d(d_v[j], d_u[j], j); // v = A*ptilde
-        copy(d_u[j], d_v[j], N, j);
+        copy(d_u[j], d_v[j], n, j);
         precompensate<<<threads,blocks,0,stream[j]>>>(d_u[j], nc*nt, nro, npe1work); // W*v
-        alpha = norm(d_ztilde, N) / dot(d_v[j], d_u[j], N);
-
+        cublasScnrm2(handle, N, (cuComplex*)d_ztilde, inc, &res1);
+        cublasCdotc(handle, n, (cuComplex*)d_v[j], inc, (cuComplex*)d_u[j], inc, &zres);
+        alpha = res1 / zres.x;
+        //alpha = norm(d_ztilde, N) / dot(d_v[j], d_u[j], n);
+        dprint(alpha,f);
         Caxpy<<<threads,blocks,0,stream[j]>>>(d_p, d_p, d_ptilde, alpha, N);
-        Caxpy<<<threads,blocks,0,stream[j]>>>(d_r, d_r, d_v[j],  -alpha, N);
+        Caxpy<<<threads,blocks,0,stream[j]>>>(d_r, d_r, d_v[j],  -alpha, n);
 
-        beta = 1.f / norm(d_ztilde, N);
-        copy(d_u[j], d_r, N, j); // ptilde = ztilde
+        cublasScnrm2(handle, N, (cuComplex*)d_ztilde, inc, &res1);
+        copy(d_u[j], d_r, n, j); // ptilde = ztilde
         tron_nufft_adj_radial2d(d_ztilde, d_u[j], j); // ztilde = A^H W r
-        beta *= norm(d_ztilde, N);
+        cublasScnrm2(handle, N, (cuComplex*)d_ztilde, inc, &res2);
+        beta = res2 / res1;
+        dprint(beta,f);
         Caxpy<<<threads,blocks,0,stream[j]>>>(d_ptilde, d_ztilde, d_ptilde, beta, N);
     }
 
@@ -764,10 +776,15 @@ recon_radial2d (float2 *h_outdata, const float2 *__restrict__ h_indata)
             cuTry(cudaMemcpyAsync(d_u[j], h_indata + data_offset,
                 nc*nt*nx*ny*sizeof(float2), cudaMemcpyHostToDevice, stream[j]));
         }
-        int niter = 10;
+        int niter = 0;
         if (flags.adjoint) {  // process data resident on GPU
-            //tron_nufft_adj_radial2d(d_v[j], d_u[j], j);
-            tron_cgnr_radial2d (d_v[j], d_u[j], j, niter);
+            for (int t = 0; t < niter; ++t) {
+              tron_nufft_adj_radial2d(d_v[j], d_u[j], j);
+              tron_nufft_radial2d(d_u[j], d_v[j], j);
+            }
+            tron_nufft_adj_radial2d(d_v[j], d_u[j], j);
+
+            //tron_cgnr_radial2d (d_v[j], d_u[j], j, niter);
         } else
             tron_nufft_radial2d(d_v[j], d_u[j], j);
 

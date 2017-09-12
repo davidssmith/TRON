@@ -46,8 +46,8 @@
 
 // CONFIGURATION PARAMETERS
 // TODO: softcode as many as possible
-#define NSTREAMS        4
-#define MULTI_GPU       1
+#define NSTREAMS        1
+#define MULTI_GPU       0
 #define NCHAN           6
 #define MAXCHAN         6
 static const int threads = 96;    // TWEAK: CUDA kernel parameters, optimize for your device

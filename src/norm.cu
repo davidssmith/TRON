@@ -139,11 +139,6 @@ norm (const float2 *d_x, const size_t N)
   return norm((float*)d_x, 2*N);
 }
 
-__host__ float
-dot (const float2 *d_a, const float2 *d_b, const size_t N)
-{
-  return dot((float*)d_a, (float*)d_b, 2*N);
-}
 
 
 #ifdef _TEST_NORM
