@@ -2,7 +2,8 @@
 function raview(filename)
 d = (squeeze(raread(filename)));
 %n = size(d,3);
-% d = d(:,:,round(n/3));
+%d = d(:,:,round(n/3));
+%d =mosaic(squeeze(d(1,:,:,:)));
 r = real((d));
 i = imag((d));
 m = (abs((d)));

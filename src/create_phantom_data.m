@@ -90,7 +90,7 @@ xirt = abs(squeeze(data_irt));
 subplot(221); imagesc((abs(squeeze(data_irt)))); title('IRT'); colorbar;
 subplot(222); imagesc((abs(squeeze(data_gn)))); title('gpuNUFFT'); colorbar;
 subplot(223); imagesc((abs(squeeze(data_bart)))-xirt); title('BART'); colorbar;
-subplot(224); imagesc((abs(squeeze(data_tron)))); title('TRON'); colorbar;
+subplot(224); imagesc((abs(squeeze(data_tron)))-xirt); title('TRON'); colorbar;
 colormap('default')
 
 %% Everyone grids everyone else
