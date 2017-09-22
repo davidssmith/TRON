@@ -67,6 +67,7 @@ static float data_undersamp = 1.f;
 static int prof_slide = 0;         // # of profiles to slide through the data between reconstructed images
 static int skip_angles = 0;        // # of angles to skip at beginning of image stack
 static int peoffset = 0;
+static int niter = 0;
 
 static int nc;  //  # of receive channels;
 static int nt;  // # of repeated measurements of same trajectory
@@ -427,8 +428,8 @@ deapodkernel (float2  *d_a, const int n, const int nrep, const float m, const fl
 {
     for (size_t id = blockIdx.x * blockDim.x + threadIdx.x; id < n*n; id += blockDim.x * gridDim.x)
     {
-        float x = id / float(n) - 0.5f*n;  // TODO: simplify this
-        float y = float(id % n) - 0.5f*n;
+        float x = id / float(n) - (n + 1) / 2;  // TODO: simplify this
+        float y = float(id % n) - (n + 1) / 2;
         float scale = 1.f / (n * sigma);
         //float r = sqrtf(x*x + y*y);
         float wgt = gridkernelhat(x*scale, m, sigma) * gridkernelhat(y*scale, m, sigma);
@@ -446,7 +447,7 @@ precompensate (float2 *nudata, const int nchan, const int nro, const int npe1wor
     float b = 1.f / float(npe1work);
     for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < npe1work; id += blockDim.x * gridDim.x)
         for (int r = 0; r < nro; ++r) {
-            float sdc = sqrtf(a*fabsf(r - float(nro/2)) + b);
+            float sdc = a*fabsf(r - float(nro/2)) + b;
             for (int c = 0; c < nchan; ++c)
                 nudata[nro*nchan*id + nchan*r + c] *= sdc;
         }
@@ -551,7 +552,7 @@ const int skip_angles, const int flag_golden_angle)
             }
         }
         for (int ch = 0; ch < nchan; ++ch)
-            udata[nchan*id + ch] = utmp[ch] / nxos / sqrtf(gridos);
+            udata[nchan*id + ch] = utmp[ch] / npe / sqrtf(gridos);
     }
 }
 
@@ -576,8 +577,13 @@ degridradial2d (
         float T = flag_golden_angle ? modang(PHI*(pe + skip_angles)) : pe*M_PI/float(npe);
 
         // thread's Cartesian coordinates
-        float X = n*R*sinf(T) + (n + 1)/2; // TODO: use _sincosf?
-        float Y = n*R*cosf(T) + (n + 1)/2; // [0, n)
+        float X, Y;
+        __sincosf(T, &X, &Y);
+        X = n*R*X + (n + 1)/2; // TODO: use _sincosf?
+        Y = n*R*Y + (n + 1)/2; // [0, n)
+        // float X = n*R*sinf(T) + (n + 1)/2; // TODO: use _sincosf?
+        // float Y = n*R*cosf(T) + (n + 1)/2; // [0, n)
+
         for (int xu = ceilf(X-W); xu <= (X+W); ++xu)
          {
             float wgtx = gridkernel(xu-X, W, gridos) / n;
@@ -714,13 +720,16 @@ tron_cgnr_radial2d (float2* d_out, float2 *d_in, const int j, const int niter)
         copy(d_u[j], d_ptilde, N, j); // u = ptilde
         tron_nufft_radial2d(d_v[j], d_u[j], j); // v = A*u
         copy(d_u[j], d_v[j], n, j); // u = v
-        precompensate<<<threads,blocks,0,stream[j]>>>(d_u[j], nc*nt, nro, npe1work); // W*v
+        //precompensate<<<threads,blocks,0,stream[j]>>>(d_u[j], nc*nt, nro, npe1work); // W*v
         cublasScnrm2(handle, N, (cuComplex*)d_ztilde, inc, &res1); // ||ztilde||
         cublasCdotc(handle, n, (cuComplex*)d_u[j], inc, (cuComplex*)d_v[j], inc, &zres);
         alpha = res1 / zres.x;
         //alpha = norm(d_ztilde, N) / dot(d_v[j], d_u[j], n);
         dprint(alpha,f);
         Caxpy<<<threads,blocks,0,stream[j]>>>(d_p, d_p, d_ptilde, alpha, N); // p = p + alpha*ptilde
+
+        if (t == niter - 1) break;
+
         Caxpy<<<threads,blocks,0,stream[j]>>>(d_r, d_r, d_v[j],  -alpha, n); // r = r - alpha*v
 
         cublasScnrm2(handle, N, (cuComplex*)d_ztilde, inc, &res1); // res1 = ||ztilde||
@@ -776,15 +785,17 @@ recon_radial2d (float2 *h_outdata, const float2 *__restrict__ h_indata)
             cuTry(cudaMemcpyAsync(d_u[j], h_indata + data_offset,
                 nc*nt*nx*ny*sizeof(float2), cudaMemcpyHostToDevice, stream[j]));
         }
-        int niter = 1;
         if (flags.adjoint) {  // process data resident on GPU
             // for (int t = 0; t < niter; ++t) {
             //   tron_nufft_adj_radial2d(d_v[j], d_u[j], j);
             //   tron_nufft_radial2d(d_u[j], d_v[j], j);
             // }
-            //tron_nufft_adj_radial2d(d_v[j], d_u[j], j);
 
-            tron_cgnr_radial2d (d_v[j], d_u[j], j, niter);
+            if (niter > 0)
+                tron_cgnr_radial2d (d_v[j], d_u[j], j, niter);
+            else
+                tron_nufft_adj_radial2d(d_v[j], d_u[j], j);
+
         } else
             tron_nufft_radial2d(d_v[j], d_u[j], j);
 
@@ -830,6 +841,7 @@ print_usage()
     fprintf(stderr, "\t-d prof_slide\t\tnumber of phase encodes to slide between slices for helical scans\n");
     fprintf(stderr, "\t-g\t\t\tgolden angle radial\n");
     fprintf(stderr, "\t-h\t\t\tshow this help\n");
+    fprintf(stderr, "\t-i\t\t\tnumber of iterations (default: 0)\n");
     fprintf(stderr, "\t-k width\t\twidth of gridding kernel\n");
     fprintf(stderr, "\t-o gridos\t\tgrid oversampling factor\n");
     fprintf(stderr, "\t-r nro\t\t\tnumber of readout points\n");
@@ -848,7 +860,7 @@ main (int argc, char *argv[])
     char infile[1024], outfile[1024];
 
     opterr = 0;
-    while ((c = getopt (argc, argv, "3ad:ghk:o:r:s:u:v")) != -1)
+    while ((c = getopt (argc, argv, "3ad:ghi:k:o:r:s:u:v")) != -1)
     {
         switch (c) {
             case '3':
@@ -865,6 +877,9 @@ main (int argc, char *argv[])
             case 'h':
                 print_usage();
                 return 1;
+            case 'i':
+                niter = atoi(optarg);
+                break;
             case 'k':
                 kernwidth = atof(optarg);
                 break;

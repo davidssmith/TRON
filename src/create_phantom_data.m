@@ -3,6 +3,7 @@
 clear all; clc;
 %LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6 matlab
 
+rgb = brewermap(51,'RdBu');
 
 
 %% Paths
@@ -28,7 +29,7 @@ npe = 2*N;
 
 %% k-space coordinates: linear radial
 traj = zeros(3,nro,npe);
-r = 2*pi*(0:nro-1)/nro - pi;
+r = (0:nro-1)/nro - 0.5;
 for pe = 1:npe
     theta = (pe-1)*pi / npe;
     traj(1,:,pe) = r *cos(theta);
@@ -55,30 +56,29 @@ end
 
 
 %% Set up IRT
-osf = 2; wg = 2; sw = 1;
-Kirt = reshape(traj(1:2,:,:), 2, []).';
+osf = 2; wg = 2; 
+Kirt = 2*pi*reshape(traj(1:2,:,:), 2, []).';
 st = nufft_init(Kirt, [N N], wg*[2 2], osf*[N N], [N/2 N/2]);
 
 %% Set up gpuNUFFT
-Kgn = reshape(traj, 3, []);
-G = gpuNUFFT(Kgn/2/pi,w,osf,wg,sw,[N,N],[],true);
+Kgn = 2*reshape(traj(1:2,:,:), 2, []);
+sw = 16;
+G = gpuNUFFT(Kgn,w,osf,wg,sw,[N,N],[],true);
 
 
 %% Everyone degrids
 data_irt = reshape(nufft(image, st),1,1, nro,npe) / N;
 rawrite(single(data_irt), 'sl_data_irt.ra', 1);
 
+tic;
 data_gn = reshape(G*image(:), 1, 1, nro, npe);
+toc;
 rawrite(single(data_gn), 'sl_data_gn.ra', 1);
 
-data_bart = reshape(bart('nufft -c', traj*nro/4/pi, image), 1, 1, nro, npe);
+data_bart = reshape(bart('nufft -c', traj*nro/2, image), 1, 1, nro, npe);
 rawrite(single(data_bart), 'sl_data_bart.ra', 1);
 
-!./shepplogan.sh 
-
-%% Convert to double
-data_gn = double(data_gn);
-data_bart = double(data_bart);
+%!./shepplogan.sh 
 
 
 %% Plot the data
@@ -89,9 +89,11 @@ figure(1);
 xirt = abs(squeeze(data_irt));
 subplot(221); imagesc((abs(squeeze(data_irt)))); title('IRT'); colorbar;
 subplot(222); imagesc((abs(squeeze(data_gn)))); title('gpuNUFFT'); colorbar;
-subplot(223); imagesc((abs(squeeze(data_bart)))-xirt); title('BART'); colorbar;
-subplot(224); imagesc((abs(squeeze(data_tron)))-xirt); title('TRON'); colorbar;
+subplot(223); imagesc(abs(squeeze(data_bart))-xirt); title('BART'); colorbar;
+subplot(224); imagesc(abs(squeeze(data_tron))-xirt); title('TRON'); colorbar;
 colormap('default')
+
+%figure(6); imagesc(abs(squeeze(data_tron))-xirt); colorbar;
 
 %% Everyone grids everyone else
 
@@ -101,15 +103,17 @@ image_gn_irt = (nufft_adj(data_gn(:) .* w(:)/N/osf, st));
 image_bart_irt = (nufft_adj(data_bart(:) .* w(:)/N/osf, st));
 image_tron_irt = (nufft_adj(data_tron(:) .* w(:)/N/osf, st));
 
-image_irt_gn = reshape((G'*(data_irt(:))), N, N) / wg^2;
-image_gn_gn = reshape((G'*(data_gn(:))), N, N) / wg^2;
-image_bart_gn = reshape((G'*(data_bart(:))), N, N) / wg^2;
-image_tron_gn = reshape((G'*(data_tron(:) )), N, N) / wg^2;
+tic;
+image_irt_gn = reshape(G'*data_irt(:), N, N) / wg^2;
+image_gn_gn = reshape(G'*data_gn(:), N, N) / wg^2;
+image_bart_gn = reshape(G'*data_bart(:), N, N) / wg^2;
+image_tron_gn = reshape(G'*data_tron(:), N, N) / wg^2;
+toc;
 
-image_irt_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_irt(:).*w(:),1,nro,npe)) / pi;
-image_gn_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_gn(:).*w(:),1,nro,npe)) / pi;
-image_bart_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_bart(:).*w(:),1,nro,npe)) / pi;
-image_tron_bart = bart('nufft -a', traj*nro/4/pi, reshape(data_tron(:).*w(:),1,nro,npe)) / pi;
+image_irt_bart = bart('nufft -a', traj*nro/2, reshape(data_irt(:).*w(:),1,nro,npe)) / pi;
+image_gn_bart = bart('nufft -a', traj*nro/2, reshape(data_gn(:).*w(:),1,nro,npe)) / pi;
+image_bart_bart = bart('nufft -a', traj*nro/2, reshape(data_bart(:).*w(:),1,nro,npe)) / pi;
+image_tron_bart = bart('nufft -a', traj*nro/2, reshape(data_tron(:).*w(:),1,nro,npe)) / pi;
 
 % !./tron -a -v sl_data_irt.ra  sl_irt_tron.ra
 % !./tron -a -v sl_data_gn_ra   sl_gn_tron.ra
@@ -146,6 +150,26 @@ subplot(222); rimp(image_tron_gn); title('TRON-gpuNUFFT');
 subplot(223); rimp(image_tron_bart); title('TRON-BART');
 subplot(224); rimp(image_tron_tron); title('TRON-TRON');
 
+%%
+
+
+
+x = lmsediff(image, abs(image_irt_irt));
+y = lmsediff(image, abs(image_irt_gn));
+z = lmsediff(abs(image_irt_bart), image);
+w = lmsediff(abs(image_irt_tron), image);
+a = -0.25; %min([x(:); y(:); z(:); w(:)]);
+b = 0.25; %max([x(:); y(:); z(:); w(:)]);
+figure(6);
+subplot(221);
+imagesc(x); colorbar; title('IRT');
+subplot(222);
+imagesc(y); colorbar; title('gpuNUFFT');
+subplot(223);
+imagesc(z); colorbar; title('BART');
+subplot(224);
+imagesc(w); colorbar; title('TRON');
+colormap(rgb);
 %% Plot everything
 data_tron = double(raread('sl_data_tron.ra'));
 data_irt = double(raread('sl_data_irt.ra'));
