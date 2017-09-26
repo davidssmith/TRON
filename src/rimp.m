@@ -5,4 +5,5 @@ i = imag(image);
 m = abs(image);
 p = angle(image)/pi;
 rgb = brewermap(51,'RdGy');
-imagesc(abs([r i; m p])); colorbar; colormap('default');
+%imagesc(abs([r i; m p])); colorbar; colormap('default');
+imagesc(abs(m)); colorbar; colormap(gray);

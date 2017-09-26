@@ -430,7 +430,7 @@ deapodkernel (float2  *d_a, const int n, const int nrep, const float m, const fl
     {
         float x = id / float(n) - (n + 1) / 2;  // TODO: simplify this
         float y = float(id % n) - (n + 1) / 2;
-        float scale = 1.f / (n * sigma);
+        float scale = 2.f / (n * sigma);
         //float r = sqrtf(x*x + y*y);
         float wgt = gridkernelhat(x*scale, m, sigma) * gridkernelhat(y*scale, m, sigma);
         //float wgt = gridkernelhat(r*scale, m, sigma);
@@ -465,6 +465,32 @@ crop (float2* dst, const int nxdst, const int nydst, const float2* __restrict__ 
         int srcid = (xdst + w)*nsrc + ydst + w;
         for (int c = 0; c < nchan; ++c)
             dst[nchan*id + c] = src[nchan*srcid + c];
+    }
+}
+
+
+
+__global__ void
+pad (float2* dst, const int ndst, const float2* __restrict__ src, const int
+nsrc, const int nchan)
+{
+    const int w = ndst > nsrc ? (ndst - nsrc) / 2 : 0;
+
+    // set whole array to zero first (not most efficient!)
+    for (int id = blockIdx.x * blockDim.x + threadIdx.x; id < ndst*ndst; id +=
+blockDim.x * gridDim.x)
+    {
+        for (int c = 0; c < nchan; ++c)
+            dst[nchan*id + c] = make_float2(0.f, 0.f);
+        int xdst = id / ndst;
+        int ydst = id % ndst;
+        if ((xdst - w > 0) && (xdst - w < nsrc) &&
+            (ydst - w > 0) && (ydst - w < nsrc))
+        {
+            size_t srcid = (xdst - w)*nsrc + (ydst - w);
+            for (int c = 0; c < nchan; ++c)
+                dst[nchan*id + c] = src[nchan*srcid + c];
+        }
     }
 }
 
@@ -552,7 +578,7 @@ const int skip_angles, const int flag_golden_angle)
             }
         }
         for (int ch = 0; ch < nchan; ++ch)
-            udata[nchan*id + ch] = utmp[ch] / npe / sqrtf(gridos);
+            udata[nchan*id + ch] = utmp[ch] / npe / nxos;
     }
 }
 
@@ -586,7 +612,7 @@ degridradial2d (
 
         for (int xu = ceilf(X-W); xu <= (X+W); ++xu)
          {
-            float wgtx = gridkernel(xu-X, W, gridos) / n;
+            float wgtx = gridkernel(xu-X, W, gridos);
             for (int yu = ceilf(Y-W); yu <= (Y+W); ++yu)
             {   // loop through contributing Cartesian points
                 //float dx = sqrtf((xu-X)*(xu-X) + (yu-Y)*(yu-Y));
@@ -661,18 +687,22 @@ tron_nufft_adj_radial2d (float2 *d_out, float2 *d_in, const int j)
     fftshift<<<threads,blocks,0,stream[j]>>>(d_in, d_out, nxos, nt*nc, FFT_SHIFT_INVERSE);
     cufftSafeCall(cufftExecC2C(fft_plan_os[j], d_in, d_out, CUFFT_INVERSE));
     fftshift<<<threads,blocks,0,stream[j]>>>(d_in, d_out, nxos, nc*nt, FFT_SHIFT_FORWARD);
+    deapodkernel<<<threads,blocks,0,stream[j]>>>(d_in, nxos, nc*nt, kernwidth, gridos);
     crop<<<threads,blocks,0,stream[j]>>>(d_out, nx, ny, d_in, nxos, nyos, nc*nt);
-    deapodkernel<<<threads,blocks,0,stream[j]>>>(d_out, nx, nc*nt, kernwidth, gridos);
 }
 
 void
 tron_nufft_radial2d (float2 *d_out, float2 *d_in, const int j)
 {
-    deapodkernel<<<threads,blocks,0,stream[j]>>>(d_in, nx, nc*nt, kernwidth, gridos);
-    fftshift<<<threads,blocks,0,stream[j]>>>(d_out, d_in, nx, nc*nt, FFT_SHIFT_FORWARD);
-    cufftSafeCall(cufftExecC2C(fft_plan[j], d_out, d_out, CUFFT_FORWARD));
-    fftshift<<<threads,blocks,0,stream[j]>>>(d_in, d_out, nx, nc*nt, FFT_SHIFT_INVERSE);
-    degridradial2d<<<threads,blocks,0,stream[j]>>>(d_out, d_in, nx, nc*nt,
+    dprint(nxos,d);
+    dprint(nx,d);
+    dprint(gridos,f);
+    pad<<<threads,blocks,0,stream[j]>>>(d_out, nxos, d_in, nx, nc*nt);
+    deapodkernel<<<threads,blocks,0,stream[j]>>>(d_out, nxos, nc*nt, kernwidth, gridos);
+    fftshift<<<threads,blocks,0,stream[j]>>>(d_in, d_out, nxos, nc*nt, FFT_SHIFT_FORWARD);
+    cufftSafeCall(cufftExecC2C(fft_plan_os[j], d_in, d_out, CUFFT_FORWARD));
+    fftshift<<<threads,blocks,0,stream[j]>>>(d_in, d_out, nxos, nc*nt, FFT_SHIFT_INVERSE);
+    degridradial2d<<<threads,blocks,0,stream[j]>>>(d_out, d_in, nxos, nc*nt,
          nro, npe1work, kernwidth, gridos, skip_angles, flags.golden_angle);
 }
 
@@ -995,7 +1025,7 @@ main (int argc, char *argv[])
         ra_out.dims[2] = nro;
         ra_out.dims[3] = npe1;
         ra_out.dims[4] = npe2;
-        gridos = 1.f;
+        //gridos = 1.f;
         h_outdatasize = nc*nt*nro*npe1*npe2*sizeof(float2);
     }
     ra_out.size = h_outdatasize;
