@@ -63,7 +63,7 @@ st = nufft_init(Kirt, [N N], wg*[2 2], osf*[N N], [N/2 N/2]);
 %% Set up gpuNUFFT
 Kgn = reshape(traj(1:2,:,:), 2, []);
 sw = 16;
-G = gpuNUFFT(Kgn,w,osf,wg*[2 2],sw,[N,N],[],true);
+G = gpuNUFFT(Kgn,w,osf,wg*[1 1],sw,[N,N],[],true);
 
 
 %% Everyone degrids
@@ -71,7 +71,7 @@ data_irt = reshape(nufft(image, st),1,1, nro,npe);
 rawrite(single(data_irt), 'sl_data_irt.ra', 1);
 
 tic;
-data_gn = double(reshape(G*image(:), 1, 1, nro, npe));
+data_gn = N*double(reshape(G*image(:), 1, 1, nro, npe));
 toc;
 rawrite(single(data_gn), 'sl_data_gn.ra', 1);
 
@@ -87,10 +87,12 @@ data_tron = double(raread('sl_data_tron.ra'));
 
 figure(1);
 xirt = abs(squeeze(data_irt));
+
+diff = (abs(squeeze(data_tron)) - xirt) / max(abs(squeeze(data_irt)));
 subplot(221); imagesc((abs(squeeze(data_irt)))); title('IRT'); colorbar;
 subplot(222); imagesc((abs(squeeze(data_gn)))); title('gpuNUFFT'); colorbar;
-subplot(223); imagesc(abs(squeeze(data_bart))-xirt); title('BART'); colorbar;
-subplot(224); imagesc(abs(squeeze(data_tron))-xirt); title('TRON'); colorbar;
+subplot(223); imagesc(abs(squeeze(data_bart))); title('BART - IRT'); colorbar;
+subplot(224); imagesc(abs(squeeze(data_tron))-xirt); title('TRON - IRT');colorbar;
 colormap('default')
 
 %figure(6); imagesc(abs(squeeze(data_tron))-xirt); colorbar;
@@ -104,14 +106,14 @@ image_bart_irt = (nufft_adj(data_bart(:) .* w(:), st)) / irt_scale;
 image_tron_irt = (nufft_adj(data_tron(:) .* w(:), st)) / irt_scale;
 
 tic;
-gn_scale = N*osf;
+gn_scale = N*osf*osf;
 image_irt_gn = reshape(G'*data_irt(:), N, N) / gn_scale;
 image_gn_gn = reshape(G'*data_gn(:), N, N) / gn_scale;
 image_bart_gn = reshape(G'*data_bart(:), N, N) / gn_scale;
 image_tron_gn = reshape(G'*data_tron(:), N, N) / gn_scale;
 toc;
 
-bart_scale = N*osf;
+bart_scale = N*osf*osf;
 image_irt_bart = bart('nufft -a', traj*nro/2, reshape(data_irt(:).*w(:),1,nro,npe)) / bart_scale;
 image_gn_bart = bart('nufft -a', traj*nro/2, reshape(data_gn(:).*w(:),1,nro,npe)) / bart_scale;
 image_bart_bart = bart('nufft -a', traj*nro/2, reshape(data_bart(:).*w(:),1,nro,npe)) / bart_scale;
@@ -157,20 +159,25 @@ subplot(224); rimp(image_tron_tron); title('TRON-TRON');
 
 
 x = lmsediff(image, abs(image_irt_irt));
-y = lmsediff(image, abs(image_irt_gn));
-z = lmsediff(abs(image_irt_bart), image);
-w = lmsediff(abs(image_irt_tron), image);
+y = lmsediff(image, abs(image_gn_gn));
+z = lmsediff(abs(image_bart_bart), image);
+w = lmsediff(abs(image_tron_tron), image);
+fprintf('IRT MRMSE:      %g\n', sqrt(mean(x(:).^2)));
+fprintf('gpuNUFFT MRMSE: %g\n', sqrt(mean(y(:).^2)));
+fprintf('BART MRMSE:     %g\n', sqrt(mean(z(:).^2)));
+fprintf('TRON MRMSE:     %g\n', sqrt(mean(w(:).^2)));  % 0.02856
+
 a = -0.25; %min([x(:); y(:); z(:); w(:)]);
 b = 0.25; %max([x(:); y(:); z(:); w(:)]);
 figure(6);
 subplot(221);
-imagesc(x); colorbar; title('IRT');
+imagesc(x); colorbar; title('IRT'); caxis([a,b]);
 subplot(222);
-imagesc(y); colorbar; title('gpuNUFFT');
+imagesc(y); colorbar; title('gpuNUFFT');  caxis([a,b]);
 subplot(223);
-imagesc(z); colorbar; title('BART');
+imagesc(z); colorbar; title('BART'); caxis([a,b]);
 subplot(224);
-imagesc(w); colorbar; title('TRON');
+imagesc(w); colorbar; title('TRON'); caxis([a,b]);
 colormap(rgb);
 %% Plot everything
 data_tron = double(raread('sl_data_tron.ra'));

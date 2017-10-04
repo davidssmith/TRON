@@ -430,7 +430,8 @@ deapodkernel (float2  *d_a, const int n, const int nrep, const float m, const fl
     {
         float x = id / float(n) - (n + 1) / 2;  // TODO: simplify this
         float y = float(id % n) - (n + 1) / 2;
-        float scale = 2.f / (n * sigma);
+        float scale = 1.f / n;
+        //float scale = 2.f / (n * sigma);
         //float r = sqrtf(x*x + y*y);
         float wgt = gridkernelhat(x*scale, m, sigma) * gridkernelhat(y*scale, m, sigma);
         //float wgt = gridkernelhat(r*scale, m, sigma);
@@ -697,6 +698,7 @@ tron_nufft_radial2d (float2 *d_out, float2 *d_in, const int j)
     dprint(nxos,d);
     dprint(nx,d);
     dprint(gridos,f);
+
     pad<<<threads,blocks,0,stream[j]>>>(d_out, nxos, d_in, nx, nc*nt);
     deapodkernel<<<threads,blocks,0,stream[j]>>>(d_out, nxos, nc*nt, kernwidth, gridos);
     fftshift<<<threads,blocks,0,stream[j]>>>(d_in, d_out, nxos, nc*nt, FFT_SHIFT_FORWARD);
@@ -733,7 +735,7 @@ tron_cgnr_radial2d (float2* d_out, float2 *d_in, const int j, const int niter)
     cublasStatus_t stat;
     stat = cublasCreate(&handle);
 
-    const size_t N = nx*ny*nc*nt;
+    const size_t N = nxos*nxos*nc*nt;
     const size_t n = nro*npe1work*nc*nt;
     dprint(N,d);
     dprint(n,d);
