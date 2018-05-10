@@ -31,23 +31,28 @@ Requirements: Newish version of MATLAB and CUDA.
 0. Make sure you have a working CUDA installation with cuFFT and the compiler `nvcc` in
    your path.
 
-1. Clone and compile [gpuNUFFT](https://github.com/andyschwarzl/gpuNUFFT) into your folder of choice.
+1. Clone and compile [TRON](https://github.com/davidssmith/TRON) into your folder of choice.
 
-2. Clone and compile [BART](https://github.com/mrirecon/bart) into your folder of choice.
+2. Pull the TRON example data from the LFS server using `git-lfs pull` in the
+   folder where you cloned TRON.
 
-3. Correct the path to gpuNUFFT and BART in the RUNME2 script.
+3. Clone and compile [gpuNUFFT](https://github.com/andyschwarzl/gpuNUFFT) into your folder of choice.
 
-4. Run `src/RUNME1_tron_degrid_phantom.sh` on the command line.
+4. Clone and compile [BART](https://github.com/mrirecon/bart) into your folder of choice.
 
-5. Change to the `src/` subdirectory and run `src/RUNME2_others_degrid_phantom.m` 
+5. Correct the path to gpuNUFFT and BART in the RUNME2 script.
+
+6. Run `src/RUNME1_tron_degrid_phantom.sh` on the command line.
+
+7. Change to the `src/` subdirectory and run `src/RUNME2_others_degrid_phantom.m` 
    in MATLAB. This should not take long to finish.
 
-6. Go back to the command line and run `src/RUNME3_tron_grid_all.sh`. This will
+8. Go back to the command line and run `src/RUNME3_tron_grid_all.sh`. This will
    also not take long.
 
-7. Go back to MATLAB and run `./RUNME4_others_grid_all.m`. This is slow. An hour
+9. Go back to MATLAB and run `./RUNME4_others_grid_all.m`. This is slow. An hour
    is normal. Put your feet up and read our paper while you wait.
 
-8. If all steps run without errors, you're done. Congratulations! The
+10. If all steps run without errors, you're done. Congratulations! The
    paper figures should be in `src/figs` and the reconstructions will be in 
    `src/output`.
