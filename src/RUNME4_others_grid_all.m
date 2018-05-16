@@ -54,6 +54,7 @@ text(1034,1004,'diff','Color','white');
 h2.PaperPositionMode = 'manual';
 orient(h2,'landscape')
 print(h2, 'figs/fig2','-dpdf','-fillpage')
+print(h2, 'figs/fig2','-deps')
 
 rmse_irt = rmse(image_irt_irt, image);
 rmse_gn = rmse(image_irt_gn, image);

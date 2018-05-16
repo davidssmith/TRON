@@ -339,11 +339,11 @@ __device__ inline float
 gridkernel (const float x, const float kernwidth, const float sigma)
 {
   // x in [-kernwidth,kernwidth]
-  float alpha = kernel_shape(kernwidth, sigma);
+  float beta = kernel_shape(kernwidth, sigma);
   if (fabsf(x) < kernwidth) {
       float r = x/kernwidth;
       float f = sqrtf(1.0f - r*r);
-      return besseli0(alpha*f) / besseli0(alpha);
+      return besseli0(beta*f);
   } else
       return 0.0f;
 }
@@ -352,21 +352,21 @@ __device__ inline float
 gridkernelhat (const float u, const float kernwidth, const float sigma)
 {
     // u in [-1/sigma,1/sigma]
-    const float J = 2.0f*kernwidth;
-    float alpha = kernel_shape(kernwidth, sigma);
+    float J = 2.0f*kernwidth;
+    float beta = kernel_shape(kernwidth, sigma);
     float r = M_PI*J*u;
-    float q = r*r - alpha*alpha;  // TODO: fix DomainError
+    float q = r*r - beta*beta;
     float y, z;
     if (q > 0) {
         z = sqrtf(q);
-        y = J * sinf(z) / z / besseli0(alpha);
+        y = sinf(z) / z;
     } else if (q < 0) {
         z = sqrtf(-q);
-        y = J * sinhf(z) / z / besseli0(alpha);
+        y = sinhf(z) / z;
     } else
-        y = J / besseli0(alpha);
+        y = 1;
     // identity: J_1/2(z) = sin(z) * sqrt(2/pi/z)
-    return y;
+    return J*y;
 }
 
 __device__ inline float
