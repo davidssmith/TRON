@@ -351,7 +351,7 @@ gridkernel (const float x, const float kernwidth, const float sigma)
 __device__ inline float
 gridkernelhat (const float u, const float kernwidth, const float sigma)
 {
-    // u in [-n/2,n/2]
+    // u in [-1/sigma,1/sigma]
     const float J = 2.0f*kernwidth;
     float alpha = kernel_shape(kernwidth, sigma);
     float r = M_PI*J*u;
@@ -364,7 +364,7 @@ gridkernelhat (const float u, const float kernwidth, const float sigma)
         z = sqrtf(-q);
         y = J * sinhf(z) / z / besseli0(alpha);
     } else
-        y = 0.0f;
+        y = J / besseli0(alpha);
     // identity: J_1/2(z) = sin(z) * sqrt(2/pi/z)
     return y;
 }
@@ -823,6 +823,7 @@ main (int argc, char *argv[])
         switch (c) {
             case '3':
                 flags.koosh = 1;
+                break;
             case 'a':
                 flags.adjoint = 1;
                 break;
