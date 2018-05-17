@@ -38,7 +38,7 @@ x = [rimp(image_irt_irt, image);
     rimp(image_irt_gn, image); 
     rimp(image_irt_bart, image); 
     rimp(image_irt_tron, image)];
-imshow(x,[l u]); colorbar;
+imagesc(x,[l u]);colormap('gray');axis image; axis off;
 imwrite(x, 'figs/fig2.png');
 %savefig(h2, 'fig2.pdf','compact'); 
 text(10,20,'IRT','Color','white');
@@ -53,8 +53,9 @@ text(1034,1004,'diff','Color','white');
 
 h2.PaperPositionMode = 'manual';
 orient(h2,'landscape')
-set(h2, 'InvertHardCopy', 'off');
-h2.Color = 'white';
+%set(h2, 'InvertHardCopy', 'off');
+h2.Color = 'white'
+colorbar;
 print(h2, 'figs/fig2','-dpdf','-fillpage')
 print(h2, 'figs/fig2','-deps')
 print(h2, 'figs/fig2','-dpng')
