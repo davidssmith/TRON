@@ -53,8 +53,11 @@ text(1034,1004,'diff','Color','white');
 
 h2.PaperPositionMode = 'manual';
 orient(h2,'landscape')
+set(h2, 'InvertHardCopy', 'off');
+h2.Color = 'white';
 print(h2, 'figs/fig2','-dpdf','-fillpage')
 print(h2, 'figs/fig2','-deps')
+print(h2, 'figs/fig2','-dpng')
 
 rmse_irt = rmse(image_irt_irt, image);
 rmse_gn = rmse(image_irt_gn, image);
@@ -241,23 +244,32 @@ Xbart = whole_body_mosaic(img_bart);
 fprintf('max(Xirt): %g\nmax(Xgn): %g\nmax(bart): %g\nmax(Xtron): %g\n', ...
     max(Xirt(:)), max(Xgn(:)), max(Xbart(:)),max(Xtron(:)));
 
-
-X = [Xirt, Xgn, Xbart, Xtron];
+X = [Xirt, Xgn; Xbart, Xtron];
 a = min(X(:));
 b = max(X(:));
 
-h3 = figure(3); clf; imshow(X,[a,0.7*b]); colormap(gray);
+h3 = figure(3); clf; imagesc(X, [a,0.9*b]); colormap(gray); axis image; axis off;
 
-text(10,20,'IRT','Color','white');
-text(512+10,20,'gpuNUFFT','Color','white');
-text(1024+10,20,'BART','Color','white');
-text(1024+512+10,20,'TRON','Color','white');
+text(10,20,'IRT','Color','w');
+text(512+10,20,'gpuNUFFT','Color','w');
+% text(1024+10,20,'BART','Color','white');
+% text(1024+512+10,20,'TRON','Color','white');
+text(10,512,'BART','Color','w');
+text(512+10,512,'TRON','Color','w');
 
-imwrite(X, 'figs/fig3.png');
+
+
+%imwrite(X, 'figs/fig3.png');
 
 h3.PaperPositionMode = 'manual';
+h3.Color = 'white';
+set(h3, 'InvertHardCopy', 'off');
 orient(h3,'landscape');
-print(h3, 'figs/fig3','-dpdf','-fillpage');
+
+print 'figs/fig3' -dpng
+print 'figs/fig3' -deps
+print 'figs/fig3' -dpdf
+
 
 
 %% Compute SSIMs

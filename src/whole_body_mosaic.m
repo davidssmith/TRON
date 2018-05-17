@@ -12,7 +12,7 @@ xyz = mosaic(xyz,1);
 w = rot90(real(squeeze(img(:,128,61:end))),-1);
 u =  rot90(real(squeeze(img(88,:,61:end))),-1);
 wu = [w u];
-imcombined = [xyz; wu];
-
+%imcombined = [xyz; wu];
+imcombined = [xyz];
 %imcombined = (imcombined - min(imcombined(:))) / (max(imcombined(:)) - min(imcombined(:)));
 

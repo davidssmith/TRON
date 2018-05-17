@@ -343,7 +343,7 @@ gridkernel (const float x, const float kernwidth, const float sigma)
   if (fabsf(x) < kernwidth) {
       float r = x/kernwidth;
       float f = sqrtf(1.0f - r*r);
-      return besseli0(beta*f);
+      return 0.5f*besseli0(beta*f)/kernwidth;
   } else
       return 0.0f;
 }
@@ -366,7 +366,7 @@ gridkernelhat (const float u, const float kernwidth, const float sigma)
     } else
         y = 1;
     // identity: J_1/2(z) = sin(z) * sqrt(2/pi/z)
-    return J*y;
+    return y;
 }
 
 __device__ inline float
