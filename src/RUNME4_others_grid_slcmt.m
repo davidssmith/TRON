@@ -14,8 +14,7 @@ rawrite(image_irt_gn, 'output/sl_irt_gn.ra');
 bart_scale =  nro*npe/N;
 image_irt_bart = bart('nufft -a', traj*nro/2, reshape(data_irt(:).*w(:),1,nro,npe)) / bart_scale;
 rawrite(image_irt_bart, 'output/sl_irt_bart.ra');
-
-%%
+%
 image_irt_irt = squeeze(raread('output/sl_irt_irt.ra'));
 image_irt_gn = squeeze(raread('output/sl_irt_gn.ra'));
 image_irt_bart = squeeze(raread('output/sl_irt_bart.ra'));
@@ -54,7 +53,7 @@ text(1034,1004,'diff','Color','white');
 h2.PaperPositionMode = 'manual';
 orient(h2,'landscape')
 %set(h2, 'InvertHardCopy', 'off');
-h2.Color = 'white'
+h2.Color = 'white';
 colorbar;
 print(h2, 'figs/fig2','-dpdf','-fillpage')
 print(h2, 'figs/fig2','-deps')
