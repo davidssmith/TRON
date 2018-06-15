@@ -166,11 +166,11 @@ img_bart = squeeze(raread('output/img_on_bart.ra'));
 
 
 %% Plot recon of optic nerve data
-t = 1;
-Xirt = img_irt(:,:,t);
-Xgn = img_gn(:,:,t);
-Xtron = img_tron(:,:,t);
-Xbart = img_bart(:,:,t);
+z = 51;
+Xirt = img_irt(:,:,z);
+Xgn = img_gn(:,:,z);
+Xtron = img_tron(:,:,z);
+Xbart = img_bart(:,:,z);
 
 
 fprintf('max(Xirt): %g\nmax(Xgn): %g\nmax(bart): %g\nmax(Xtron): %g\n', ...
@@ -180,7 +180,7 @@ X = [Xirt, Xgn; Xbart, Xtron];
 a = min(X(:));
 b = max(X(:));
 
-subplot(121); imagesc(X, [a,0.7*b]); 
+subplot(121); imagesc(X, [a,0.3*b]); 
 set(gca,'FontSize',14);
 
 title('reconstructed optic nerve images');
@@ -195,7 +195,7 @@ text(nx+10,ny,'TRON','Color','w');
 
 
 h5.PaperPositionMode = 'manual';
-print(h5, 'figs/fig5','-dpdf','-fillpage');
+%print(h5, 'figs/fig5','-dpdf','-fillpage');
 
 %imwrite(X, 'figs/fig3.png');
 
@@ -213,7 +213,7 @@ print 'figs/fig5' -dpdf
 %
 %ssimval = ssim(A,ref)
 %[ssimval,ssimmap] = ssim(A,ref)
-z = 350;
+
 x = real(img_irt(:,:,z));
 [ssim_gn, ssim_map_gn] = ssim(double(real(img_gn(:,:,z))), x);
 [ssim_bart, ssim_map_bart] = ssim(double(real(img_bart(:,:,z))), x);

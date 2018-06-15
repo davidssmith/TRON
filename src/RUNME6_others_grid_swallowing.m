@@ -145,7 +145,7 @@ T = readtable('figs/sw_timings.csv');
 cputime = T.cputime;
 cputime(4) = 0.78;
 cputime = cputime([4,2,1,3]);
-h5 = figure(5);
+h6 = figure(6);
 subplot(122);
 barh(cputime,'black'); axis('square');
 title('run time for swallowing data set (s)');
@@ -166,11 +166,11 @@ img_bart = squeeze(raread('output/img_sw_bart.ra'));
 
 
 %% Plot recon of optic nerve data
-t = 100;
-Xirt = rot90(img_irt(:,:,t));
-Xgn = rot90(img_gn(:,:,t));
-Xtron = rot90(img_tron(:,:,t));
-Xbart = rot90(img_bart(:,:,t));
+z = 100;
+Xirt = rot90(img_irt(:,:,z));
+Xgn = rot90(img_gn(:,:,z));
+Xtron = rot90(img_tron(:,:,z));
+Xbart = rot90(img_bart(:,:,z));
 
 
 fprintf('max(Xirt): %g\nmax(Xgn): %g\nmax(bart): %g\nmax(Xtron): %g\n', ...
@@ -180,7 +180,7 @@ X = [Xirt, Xgn; Xbart, Xtron];
 a = min(X(:));
 b = max(X(:));
 
-subplot(121); imagesc(X, [a,0.7*b]); 
+subplot(121); imagesc(X, [a,0.6*b]); 
 set(gca,'FontSize',14);
 
 title('reconstructed swallowing images');
@@ -194,8 +194,8 @@ text(10,ny,'BART','Color','w');
 text(nx+10,ny,'TRON','Color','w');
 
 
-h5.PaperPositionMode = 'manual';
-print(h5, 'figs/fig5','-dpdf','-fillpage');
+h6.PaperPositionMode = 'manual';
+%print(h5, 'figs/fig6','-dpdf','-fillpage');
 
 %imwrite(X, 'figs/fig3.png');
 
@@ -203,9 +203,9 @@ h5.Color = 'white';
 set(h5, 'InvertHardCopy', 'off');
 orient(h5,'landscape');
 
-print 'figs/fig5' -dpng
-print 'figs/fig5' -deps
-print 'figs/fig5' -dpdf
+print 'figs/fig6' -dpng
+print 'figs/fig6' -deps
+print 'figs/fig6' -dpdf
 
 
 
@@ -213,7 +213,6 @@ print 'figs/fig5' -dpdf
 %
 %ssimval = ssim(A,ref)
 %[ssimval,ssimmap] = ssim(A,ref)
-z = 350;
 x = real(img_irt(:,:,z));
 [ssim_gn, ssim_map_gn] = ssim(double(real(img_gn(:,:,z))), x);
 [ssim_bart, ssim_map_bart] = ssim(double(real(img_bart(:,:,z))), x);

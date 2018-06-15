@@ -214,15 +214,13 @@ T = readtable('figs/cmt_timings.csv');
 cputime = T.cputime;
 cputime(4) = 3.28;
 cputime = cputime([4,2,1,3]);
-h4 = figure(4);
+h3 = figure(3);
+subplot(122);
 barh(cputime,'black');
 xlabel('run time for whole-body data set (s)');
 set(gca, 'Xscale','log','FontSize',14);
 yticklabels({'TRON','gpuNUFFT','IRT','BART'});
-h4.PaperPositionMode = 'manual';
 text(cputime*1.05,1:4,num2str(cputime,'%4.3g'));
-orient(h4,'landscape');
-print(h4, 'figs/fig4','-dpdf','-fillpage');
 
 
 %% reload recons so that can develop without running recons again
@@ -248,7 +246,7 @@ X = [Xirt, Xgn; Xbart, Xtron];
 a = min(X(:));
 b = max(X(:));
 
-h3 = figure(3); clf; imagesc(X, [a,0.9*b]); colormap(gray); axis image; axis off;
+subplot(121); clf; imagesc(X, [a,0.9*b]); colormap(gray); axis image; axis off;
 
 text(10,20,'IRT','Color','w');
 text(512+10,20,'gpuNUFFT','Color','w');
@@ -265,6 +263,8 @@ h3.PaperPositionMode = 'manual';
 h3.Color = 'white';
 set(h3, 'InvertHardCopy', 'off');
 orient(h3,'landscape');
+print(h3, 'figs/fig3','-dpdf','-fillpage');
+
 
 print 'figs/fig3' -dpng
 print 'figs/fig3' -deps
