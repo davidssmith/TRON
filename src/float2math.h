@@ -40,7 +40,13 @@ inline __host__ __device__ float2 operator*(const float2 a, const float2 b)
     return make_float2(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x);
 }
 
-inline __host__ __device__ float dot (const float2 a, const float2 b) { return a.x * b.x + a.y * b.y; }
+inline __host__ __device__ float dot (const float2 a, const float2 b)
+{
+    float2 res;
+    res.x =  a.x * b.x + a.y * b.y;
+    res.y = -a.y * b.x + b.y * a.x;
+    return res;
+}
 inline __host__ __device__ float norm (const float2 a) { return a.x * a.x + a.y * a.y; }
 inline __host__ __device__ float abs (const float2 a) { return hypotf(a.x,a.y); }
 inline __host__ __device__ float2 conj (const float2 a) { return make_float2(a.x,-a.y); }
