@@ -9,13 +9,13 @@ make &&
   echo ------- re-gridding whole-body volume using TRON
   ./tron -v -u 0.4 -d 21 -a -G ../data/ex_whole_body.ra output/img_cmt_tron.ra
   echo ------- re-gridding linear-angle phantom volume using TRON
-  ./tron -v -u 0.4 -d 21 -a ../data/cmt_phantom_la.ra output/img_laph_tron.ra
+  ./tron -v -u 0.5 -d 256 -a ../data/cmt_phantom_la.ra output/img_laph_tron.ra
   echo ------- re-gridding optic nerve volume using TRON
-  ./tron -v -u 0.4 -d 21 -a -G ../data/optic_nerve_002.ra output/img_on_tron.ra
+  ./tron -v -u 0.5 -a -G ../data/optic_nerve.ra output/img_on_tron.ra
   #./tron -v -u 0.4 -d 21 -a -G ../data/optic_nerve_002.ra output/img_on_tron.ra
   #./tron -v -u 0.4 -d 21 -a -G ../data/optic_nerve_002.ra output/img_on_tron.ra
-  #echo ------- re-gridding swallowing volume using TRON
-  ./tron -v -u 0.4 -d 21 -a -G ../data/swallowing/raw_012.ra output/img_sw_tron.ra
+  echo ------- re-gridding swallowing volume using TRON
+  ./tron -v -u 0.5 -a -G ../data/swallowing.ra output/img_sw_tron.ra
   #./tron -v -u 0.4 -d 21 -a -G ../data/swallowing/raw_012.ra output/img_sw_tron.ra
   #./tron -v -u 0.4 -d 21 -a -G ../data/swallowing/raw_012.ra output/img_sw_tron.ra
 }

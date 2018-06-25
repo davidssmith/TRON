@@ -739,8 +739,9 @@ recon_radial2d (float2 *h_outdata, const float2 *__restrict__ h_indata)
         size_t data_offset = nc*nt*nro*peoffset;  // address offsets into the data arrays
         size_t img_offset = nt*nx*ny*z;
 
-        printf("[dev %d, stream %d] reconstructing slice %d/%d from PEs %d-%d\n",
-            j%ndevices, j, z+1, nz, z*prof_slide, (z+1)*prof_slide-1);
+        if (flags.verbose)
+            printf("[dev %d, stream %d] reconstructing slice %d/%d from PEs %d-%d\n",
+                j%ndevices, j, z+1, nz, z*prof_slide, (z+1)*prof_slide-1);
 
         if (flags.adjoint) { // copy working data to GPU
             cuTry(cudaMemcpyAsync(d_u[j], h_indata + data_offset,

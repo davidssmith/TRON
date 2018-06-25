@@ -84,6 +84,7 @@ data_tron = double(raread('output/sl_data_tron.ra'));
 %% Plot the data
 
 h = figure(1);
+set(gcf,'color','w');
 clf;
 diff = (squeeze(abs(data_tron)-abs(data_irt))) ./ max(abs(squeeze(data_irt))); 
 subplot(221); imshow(log(abs(squeeze(data_irt))),[-6,10]); title('IRT k-space'); colorbar; axis('off');
@@ -112,5 +113,9 @@ title('profile trace, column 256')
 %fixfig;
 %savefig('fig1.pdf','compact');
 h.PaperPositionMode = 'manual';
+h.Color = 'white';
+set(h, 'InvertHardCopy', 'off');
 orient(h,'landscape')
 print(h,'figs/fig1','-dpdf','-fillpage');
+print(h,'figs/fig1','-depsc');
+
