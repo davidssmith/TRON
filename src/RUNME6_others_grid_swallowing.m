@@ -6,7 +6,7 @@ nchan = size(data,1);
 nro = size(data,2);
 npe = size(data,3);
 npe_per_slice = nro/2;
-prof_slide = nro/2;
+prof_slide = 21; %nro/2;
 nx = nro / 2;
 ny = nx;
 %nz =  floor(npe / prof_slide) - 1;
@@ -144,7 +144,7 @@ end
 %% plot run times
 T = readtable('figs/sw_timings.csv');
 cputime = T.cputime;
-cputime(4) = 0.32;
+cputime(4) = 0.92;
 cputime = cputime([4,2,1,3]);
 h5 = figure(5);
 set(gcf,'color','w');

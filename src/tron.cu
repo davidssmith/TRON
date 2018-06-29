@@ -506,7 +506,7 @@ const int skip_angles, const int flag_golden_angle)
 
         for (int pe = 0; pe < npe; ++pe)
         {
-            float t = flag_golden_angle ? modang(PHI * float(pe + skip_angles)) : pe*M_PI / float(npe);
+            float t = flag_golden_angle ? modang(PHI * float(pe + skip_angles)) : pe*2.0f*M_PI / float(npe) + M_PI*0.5f;
             float st, ct;
             __sincosf(t, &st, &ct);
             for (int r = Rlo; r <= Rhi; ++r)  // aligned profiles

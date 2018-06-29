@@ -1,12 +1,12 @@
 
 
-%% Read swallowing data
+%% Read phantom data
 data = double(squeeze(raread('../data/cmt_phantom_la.ra')));
 nchan = size(data,1);
 nro = size(data,2);
 npe = size(data,3);
-npe_per_slice = 256;
-prof_slide = 256;
+npe_per_slice = 512;
+prof_slide = 512;
 nx = nro / 2;
 ny = nx;
 %nz =  floor(npe / prof_slide) - 1;
@@ -47,7 +47,7 @@ if exist(outfile) == 0
 
       for pe = 1:npe_per_slice
           %theta = 111.246*(pe-1+p1-1)*pi / 180;
-          theta = pi*(pe-1)/ npe_per_slice;
+          theta = 2*pi*(pe-1)/ npe_per_slice + pi/2;
           traj(1,:,pe) = r *cos(theta);
           traj(2,:,pe) = r* sin(theta);
       end
@@ -79,7 +79,7 @@ if exist(outfile) == 0
       fprintf('gpuNUFFT slice %d/%d pe:%d-%d\n', z, nz, p1, p2);
       data_this_slice = data(:,:,p1:p2);
       for pe = 1:npe_per_slice
-          theta = pi*(pe-1)/ npe_per_slice;
+          theta = 2*pi*(pe-1)/ npe_per_slice + pi/2;
           traj(1,:,pe) = r *cos(theta);
           traj(2,:,pe) = r* sin(theta);
       end
@@ -100,7 +100,7 @@ end
 outfile = 'output/img_laph_bart.ra';
 if exist(outfile) == 0
   tstart = tic;
-  bart_scale = sqrt(nx*npe_per_slice);
+  bart_scale = sqrt(nro*npe_per_slice);
   nx1 = round(nx/2)+1;
   nx2 = round(3*nx/2);
   ny1 = round(ny/2)+1;
@@ -113,7 +113,7 @@ if exist(outfile) == 0
     fprintf('BART slice %d/%d pe:%d-%d\n', z, nz, p1, p2);
     data_this_slice = single(data(:,:,p1:p2));
     for pe = 1:npe_per_slice
-      theta = pi*(pe-1)/ npe_per_slice;
+      theta = 2*pi*(pe-1)/ npe_per_slice + pi/2;
       traj(1,:,pe) = r *cos(theta);
       traj(2,:,pe) = r* sin(theta);
     end
@@ -143,7 +143,7 @@ end
 %% plot run times
 T = readtable('figs/laph_timings.csv');
 cputime = T.cputime;
-cputime(4) = 0.52;
+cputime(4) = 0.76;
 cputime = cputime([4,2,1,3]);
 h6 = figure(6);
 set(gcf,'color','w');
@@ -168,7 +168,7 @@ img_bart = squeeze(raread('output/img_laph_bart.ra'));
 
 
 %% Plot recon of phantom data
-z = 12; %[10,27,40]; %floor(nz/4);
+z = 6; %[10,27,40]; %floor(nz/4);
 x = 1;
 y = 1;
 Xirt = mosaic(img_irt(x:end,y:end,z)); %rot90(img_irt(:,:,z));
@@ -184,7 +184,7 @@ X = [Xirt, Xgn; Xbart, Xtron];
 a = min(X(:));
 b = max(X(:));
 
-subplot(121); imagesc(X, [a,0.95*b]);
+subplot(121); imagesc(X, [a,b]);
 set(gca,'FontSize',14);
 
 title('linear-angle phantom');
@@ -232,7 +232,6 @@ x = real(img_irt(:,:,z));
 fprintf('gpuNUFFT SSIM: %g\n', ssim_gn);
 fprintf('BART SSIM:     %g\n', ssim_bart);
 fprintf('TRON SSIM:     %g\n', ssim_tron);
-
 
 name = {'gpuNUFFT';'BART';'TRON'};
 ssims = [ssim_gn; ssim_bart; ssim_tron];
