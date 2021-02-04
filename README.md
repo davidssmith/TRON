@@ -1,5 +1,7 @@
 # TRON: TRajectory Optimized Nufft
 
+<img src="tron_recon.png" alt="TRON recon" />
+
 ## Introduction
 
 This is the repository for the paper, "[Trajectory Optimized Nufft: Faster Non-Cartesian MRI Reconstruction through
@@ -56,3 +58,4 @@ Requirements: Newish version of MATLAB and CUDA.
 10. If all steps run without errors, you're done. Congratulations! The
    paper figures should be in `src/figs` and the reconstructions will be in 
    `src/output`.
+
