@@ -2,8 +2,8 @@
 
 ## Introduction
 
-This is the repository for the paper, "Trajectory Optimized Nufft: Faster Non-Cartesian MRI Reconstruction through
-Prior Knowledge and Parallel Architectures".
+This is the repository for the paper, "[Trajectory Optimized Nufft: Faster Non-Cartesian MRI Reconstruction through
+Prior Knowledge and Parallel Architectures](https://onlinelibrary.wiley.com/doi/10.1002/mrm.27497)".
 
 Fast non-Cartesian MRI reconstruction ("gridding") requires interpolation of
 non-uniformly sampled Fourier data onto a Cartesian grid. This interpolation
