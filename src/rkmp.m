@@ -1,9 +1,0 @@
-function x = rkmp(image,kspace)
-image = squeeze(image);
-r = real(image);
-i = imag(image);
-m = abs(image);
-p = angle(image)/pi;
-k = log(abs(kspace));
-k = k / max(k(:));
-x = abs([r k; m p]);
